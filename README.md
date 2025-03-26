@@ -1,4 +1,4 @@
-Stalloc (Stack + alloc) is a fast first-fit memory allocator. From my benchmarking, it can be 3x as fast as the default OS allocator! This is because all memory is allocated from the stack, which allows it to avoid all OS overhead.
+Stalloc (Stack + alloc) is a fast first-fit memory allocator written in Rust. From my benchmarking, it can be over 3x as fast as the default OS allocator! This is because all memory is allocated from the stack, which allows it to avoid all OS overhead.
 
 Note that Stalloc has a fixed amount of memory. If it doesn't have any more, it could result in your program crashing immediately.
 

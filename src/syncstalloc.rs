@@ -32,8 +32,7 @@ where
 	/// a layout with a size and alignment of `B` bytes.
 	/// This runs in O(1).
 	pub fn is_oom(&self) -> bool {
-		// SAFETY: See above.
-		unsafe { self.inner.lock().unwrap_unchecked().is_oom() }
+		self.acquire_locked().is_oom()
 	}
 
 	/// Checks if the allocator is empty.
@@ -42,8 +41,7 @@ where
 	/// If this is false, then this is guaranteed to be impossible.
 	/// This runs in O(1).
 	pub fn is_empty(&self) -> bool {
-		// SAFETY: See above.
-		unsafe { self.inner.lock().unwrap_unchecked().is_empty() }
+		self.acquire_locked().is_empty()
 	}
 
 	/// # Safety
@@ -51,8 +49,8 @@ where
 	/// Calling this function immediately invalidates all pointers into the allocator. Calling
 	/// deallocate() with an invalidated pointer may result in the free list being corrupted.
 	pub unsafe fn clear(&self) {
-		// SAFETY: See above.
-		unsafe { self.inner.lock().unwrap_unchecked().clear() }
+		// SAFETY: Upheld by the caller.
+		unsafe { self.acquire_locked().clear() }
 	}
 
 	fn acquire_locked(&self) -> MutexGuard<UnsafeStalloc<L, B>> {
@@ -76,7 +74,6 @@ where
 	Align<B>: Alignment,
 {
 	fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-		// SAFETY: See above.
 		write!(f, "{:?}", self.acquire_locked())
 	}
 }
@@ -111,7 +108,6 @@ where
 	Align<B>: Alignment,
 {
 	fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
-		// SAFETY: Upheld by the caller.
 		self.acquire_locked().allocate(layout)
 	}
 

@@ -3,9 +3,9 @@
 use core::alloc::{AllocError, Allocator, Layout};
 use core::cell::UnsafeCell;
 use core::fmt::{self, Debug, Formatter};
+use core::hint::assert_unchecked;
 use core::mem::MaybeUninit;
 use core::ptr::{self, NonNull};
-use std::hint::assert_unchecked;
 
 mod align;
 use align::*;

@@ -1,6 +1,7 @@
+use core::alloc::{AllocError, Allocator, GlobalAlloc, Layout};
 use core::fmt::{self, Debug, Formatter};
-use std::alloc::{AllocError, Allocator, GlobalAlloc, Layout};
-use std::ptr::{self, NonNull};
+use core::ops::Deref;
+use core::ptr::{self, NonNull};
 
 use crate::Stalloc;
 use crate::align::*;
@@ -13,6 +14,17 @@ where
 	Align<B>: Alignment,
 {
 	inner: Stalloc<L, B>,
+}
+
+impl<const L: usize, const B: usize> Deref for UnsafeStalloc<L, B>
+where
+	Align<B>: Alignment,
+{
+	type Target = Stalloc<L, B>;
+
+	fn deref(&self) -> &Self::Target {
+		&self.inner
+	}
 }
 
 impl<const L: usize, const B: usize> Debug for UnsafeStalloc<L, B>
@@ -35,34 +47,6 @@ where
 	pub const unsafe fn new() -> Self {
 		Self {
 			inner: Stalloc::<L, B>::new(),
-		}
-	}
-
-	/// Checks if the allocator is completely out of memory.
-	/// If this is false, then you are guaranteed to be able to allocate
-	/// a layout with a size and alignment of `B` bytes.
-	/// This runs in O(1).
-	pub fn is_oom(&self) -> bool {
-		self.inner.is_oom()
-	}
-
-	/// Checks if the allocator is empty.
-	/// If this is true, then you are guaranteed to be able to allocate
-	/// a layout with a size of `B * L` bytes and an alignment of `B` bytes.
-	/// If this is false, then this is guaranteed to be impossible.
-	/// This runs in O(1).
-	pub fn is_empty(&self) -> bool {
-		self.inner.is_empty()
-	}
-
-	/// # Safety
-	///
-	/// Calling this function immediately invalidates all pointers into the allocator. Calling
-	/// deallocate() with an invalidated pointer may result in the free list being corrupted.
-	pub unsafe fn clear(&self) {
-		// SAFETY: Upheld by the caller.
-		unsafe {
-			self.inner.clear();
 		}
 	}
 }

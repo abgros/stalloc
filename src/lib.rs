@@ -16,7 +16,7 @@ pub use syncstalloc::*;
 #[cfg(test)]
 mod tests;
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy)]
 struct Header {
 	next: u16,
 	length: u16,
@@ -128,11 +128,6 @@ where
 	/// Safety precondition: idx must be in `0..L`.
 	unsafe fn header_at(&self, idx: usize) -> *mut Header {
 		unsafe { &raw mut (*self.block_at(idx)).header }
-	}
-
-	/// This function doesn't dereference `ptr`, so it is always safe to call.
-	fn nonnull_to_header(&self, ptr: NonNull<u8>) -> *mut Header {
-		unsafe { &raw mut (*ptr.as_ptr().cast::<Block<B>>()).header }
 	}
 
 	/// This function always is safe to call. If `idx` is very large,
@@ -290,7 +285,7 @@ where
 		}
 
 		let size = layout.size().div_ceil(B);
-		let freed_ptr = self.nonnull_to_header(ptr);
+		let freed_ptr = unsafe { &raw mut (*ptr.as_ptr().cast::<Block<B>>()).header };
 		let freed_idx = self.index_of(freed_ptr);
 		let base = self.base.get();
 		let before = self.header_before(freed_idx);

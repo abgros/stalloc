@@ -1,5 +1,5 @@
 use crate::Stalloc;
-use std::{hint::black_box, mem};
+use std::mem;
 
 #[test]
 fn test_vec() {

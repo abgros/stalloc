@@ -5,6 +5,7 @@ use core::cell::UnsafeCell;
 use core::fmt::{self, Debug, Formatter};
 use core::mem::MaybeUninit;
 use core::ptr::{self, NonNull};
+use std::hint::assert_unchecked;
 
 mod align;
 use align::*;
@@ -57,6 +58,7 @@ where
 	data: UnsafeCell<[Block<B>; L]>,
 }
 
+// Public API
 impl<const L: usize, const B: usize> Stalloc<L, B>
 where
 	Align<B>: Alignment,
@@ -111,6 +113,235 @@ where
 		}
 	}
 
+	/// Tries to allocate `count` blocks. If the allocation succeed, a pointer is returned. This function
+	/// never allocates more than necessary.
+	///
+	/// # Safety
+	///
+	/// `size` must be nonzero, and `align` must be a power of 2 in the range `1..=2^29 / B`.
+	pub unsafe fn allocate_blocks(
+		&self,
+		size: usize,
+		align: usize,
+	) -> Result<NonNull<u8>, AllocError> {
+		// Assert unsafe preconditions to help catch bugs.
+		unsafe {
+			assert_unchecked(size >= 1 && align.is_power_of_two() && align < 2usize.pow(29) / B);
+		}
+
+		if self.is_oom() {
+			return Err(AllocError);
+		}
+
+		// Loop through the free list, and find the first header whose length satisfies the layout.
+		unsafe {
+			// `prev` and `curr` are pointers that run through the free list.
+			let base = self.base.get();
+			let mut prev = base;
+			let mut curr = self.header_at((*base).next as usize);
+
+			loop {
+				let curr_idx = (*prev).next as usize;
+				let next_idx = (*curr).next as usize;
+
+				// Check if the current free chunk satisfies the layout.
+				let curr_chunk_len = (*curr).length as usize;
+
+				// If the alignment is more than 1, there might be spare blocks in front.
+				// If it is extremely large, there might have to be more spare blocks than are available.
+				let spare_front: usize = (curr.addr() / B).wrapping_neg() % align;
+
+				if spare_front + size <= curr_chunk_len {
+					let avail_blocks = curr_chunk_len - spare_front;
+					let avail_blocks_ptr = self.block_at(curr_idx + spare_front);
+					let spare_back = avail_blocks - size;
+
+					// If there are spare blocks, add them to the free list.
+					if spare_back > 0 {
+						let spare_back_idx = curr_idx + spare_front + size;
+						let spare_back_ptr = self.header_at(spare_back_idx);
+						(*spare_back_ptr).next = next_idx as u16;
+						(*spare_back_ptr).length = spare_back as u16;
+
+						if spare_front > 0 {
+							(*curr).next = spare_back_idx as u16;
+							(*curr).length = spare_front as u16;
+						} else {
+							(*prev).next = spare_back_idx as u16;
+						}
+					} else if spare_front > 0 {
+						(*curr).next = (curr_idx + spare_front + size) as u16;
+						(*curr).length = spare_front as u16;
+						(*prev).next = next_idx as u16;
+					} else {
+						(*prev).next = next_idx as u16;
+						// If this is the last block of memory, set the OOM marker.
+						if next_idx == 0 {
+							(*base).length = OOM_MARKER;
+						}
+					}
+
+					return Ok(NonNull::new_unchecked(avail_blocks_ptr.cast()));
+				}
+
+				// Check if we've already made a whole loop around without finding anything.
+				if next_idx == 0 {
+					return Err(AllocError);
+				}
+
+				prev = curr;
+				curr = self.header_at(next_idx);
+			}
+		}
+	}
+
+	/// Deallocates a pointer.
+	///
+	/// # Safety
+	///
+	/// `ptr` must point to an allocation, and `size` must be the number of blocks
+	/// in the allocation. That is, `size` is always in `1..=L`.
+	pub unsafe fn deallocate_blocks(&self, ptr: NonNull<u8>, size: usize) {
+		// Assert unsafe precondition.
+		unsafe {
+			assert_unchecked(size >= 1 && size <= L);
+		}
+
+		let freed_ptr = unsafe { &raw mut (*ptr.as_ptr().cast::<Block<B>>()).header };
+		let freed_idx = self.index_of(freed_ptr);
+		let base = self.base.get();
+		let before = self.header_before(freed_idx);
+
+		unsafe {
+			let prev_next = (*before).next as usize;
+			(*freed_ptr).next = prev_next as u16;
+			(*freed_ptr).length = size as u16;
+
+			// Try to merge with the next free block.
+			if freed_idx + size == prev_next {
+				let header_to_merge = self.header_at(prev_next);
+				(*freed_ptr).next = (*header_to_merge).next;
+				(*freed_ptr).length += (*header_to_merge).length;
+			}
+
+			// Try to merge with the previous free block.
+			if before.eq(&base) {
+				(*base).next = freed_idx as u16;
+				(*base).length = 0;
+			} else if self.index_of(before) + (*before).length as usize == freed_idx {
+				(*before).next = (*freed_ptr).next;
+				(*before).length += (*freed_ptr).length;
+			} else {
+				// No merge is possible.
+				(*before).next = freed_idx as u16;
+			}
+		}
+	}
+
+	/// Shrinks the allocation. This function always succeeds and never reallocates.
+	///
+	/// # Safety
+	///
+	/// `ptr` must point to a valid allocation of `old_size` blocks. `new_size` must be in `1..old_size`.
+	pub unsafe fn shrink_in_place(&self, ptr: NonNull<u8>, old_size: usize, new_size: usize) {
+		// Assert unsafe preconditions.
+		unsafe {
+			assert_unchecked(new_size > 0 && new_size < old_size);
+		}
+
+		let curr_block: *mut Block<B> = ptr.as_ptr().cast();
+		let curr_idx = (curr_block.addr() - self.data.get().addr()) / B;
+
+		// A new chunk will be created in the gap.
+		let new_idx = curr_idx + new_size;
+		let spare_blocks = old_size - new_size;
+
+		unsafe {
+			// We are definitely no longer OOM.
+			(*self.base.get()).length = 0;
+
+			// Check if we can merge the block with a chunk immediately after.
+			let prev_free_chunk = self.header_before(curr_idx);
+			let next_free_idx = (*prev_free_chunk).next as usize;
+			let new_chunk = &raw mut (*curr_block.add(new_size)).header;
+
+			(*prev_free_chunk).next = new_idx as u16;
+			if new_idx + spare_blocks == next_free_idx {
+				let next_free_chunk = self.header_at(next_free_idx);
+				(*new_chunk).next = (*next_free_chunk).next;
+				(*new_chunk).length = spare_blocks as u16 + (*next_free_chunk).length;
+			} else {
+				(*new_chunk).next = next_free_idx as u16;
+				(*new_chunk).length = spare_blocks as u16;
+			}
+		}
+	}
+
+	/// Tries to grow the current allocation in-place. If that isn't possible, this function is a no-op.
+	///
+	/// # Safety
+	///
+	/// `ptr` must point to a valid allocation of `old_size` blocks. Also, `new_size > old_size`.
+	pub unsafe fn grow_in_place(
+		&self,
+		ptr: NonNull<u8>,
+		old_size: usize,
+		new_size: usize,
+	) -> Result<(), AllocError> {
+		// Assert unsafe preconditions.
+		unsafe {
+			assert_unchecked(old_size >= 1 && old_size <= L && new_size > old_size);
+		}
+
+		let needed_blocks = new_size - old_size;
+		let curr_block: *mut Block<B> = ptr.as_ptr().cast();
+		let curr_idx = (curr_block.addr() - self.data.get().addr()) / B;
+		let prev_free_chunk = self.header_before(curr_idx);
+
+		unsafe {
+			let next_free_idx = (*prev_free_chunk).next as usize;
+			let next_free_chunk = self.header_at(next_free_idx);
+			let room_to_grow = (*next_free_chunk).length as usize;
+
+			// Check if there's room to grow.
+			// Note: `next_idx` must be directly after the current allocation.
+			// Also, the requested amount of chunks must be within the next free chunk.
+			if curr_idx + old_size == next_free_idx && needed_blocks <= room_to_grow {
+				// Check if there would be any blocks left over after growing into the next chunk.
+				let blocks_left_over = room_to_grow - needed_blocks;
+
+				if blocks_left_over > 0 {
+					let new_chunk_idx = next_free_idx + needed_blocks;
+					let new_chunk_head = self.header_at(new_chunk_idx);
+
+					// Insert the new chunk into the free list.
+					(*prev_free_chunk).next = new_chunk_idx as u16;
+					(*new_chunk_head).next = (*next_free_chunk).next;
+					(*new_chunk_head).length = blocks_left_over as u16;
+				} else {
+					// The free chunk is completely consumed.
+					(*prev_free_chunk).next = (*next_free_chunk).next;
+
+					// If `prev_free_chunk` is the base pointer and we just set it to 0, we are OOM.
+					let base = self.base.get();
+					if prev_free_chunk.eq(&base) && (*next_free_chunk).next == 0 {
+						(*base).length = OOM_MARKER;
+					}
+				}
+
+				Ok(())
+			} else {
+				Err(AllocError)
+			}
+		}
+	}
+}
+
+// Internal functions.
+impl<const L: usize, const B: usize> Stalloc<L, B>
+where
+	Align<B>: Alignment,
+{
 	/// Get the index of a pointer to `data`. This function is always safe
 	/// to call, but the result may not be meaningful.
 	/// Even if the header is not at the start of the block (compiler's choice),
@@ -208,112 +439,22 @@ where
 			return Ok(NonNull::slice_from_raw_parts(dangling, 0));
 		}
 
-		// Check whether `data` is completely full, or the requested allocation is obviously too large.
-		if self.is_oom() || size > L || align > L {
-			return Err(AllocError);
-		}
-
-		// Loop through the free list, and find the first header whose length satisfies the layout.
+		// SAFETY: We have made sure that `size` and `align` are valid.
 		unsafe {
-			// `prev` and `curr` are pointers that run through the free list.
-			let base = self.base.get();
-			let mut prev = base;
-			let mut curr = self.header_at((*base).next as usize);
-
-			loop {
-				let curr_idx = (*prev).next as usize;
-				let next_idx = (*curr).next as usize;
-
-				// Check if the current free chunk satisfies the layout.
-				let curr_chunk_len = (*curr).length as usize;
-
-				// If the alignment is more than 1, there might be spare blocks in front.
-				// If it is extremely large, there might have to be more spare blocks than are available.
-				let spare_front: usize = (curr.addr() / B).wrapping_neg() % align;
-
-				if spare_front + size <= curr_chunk_len {
-					let avail_blocks = curr_chunk_len - spare_front;
-					let avail_blocks_ptr = self.block_at(curr_idx + spare_front);
-					let spare_back = avail_blocks - size;
-
-					// If there are spare blocks, add them to the free list.
-					if spare_back > 0 {
-						let spare_back_idx = curr_idx + spare_front + size;
-						let spare_back_ptr = self.header_at(spare_back_idx);
-						(*spare_back_ptr).next = next_idx as u16;
-						(*spare_back_ptr).length = spare_back as u16;
-
-						if spare_front > 0 {
-							(*curr).next = spare_back_idx as u16;
-							(*curr).length = spare_front as u16;
-						} else {
-							(*prev).next = spare_back_idx as u16;
-						}
-					} else if spare_front > 0 {
-						(*curr).next = (curr_idx + spare_front + size) as u16;
-						(*curr).length = spare_front as u16;
-						(*prev).next = next_idx as u16;
-					} else {
-						(*prev).next = next_idx as u16;
-						// If this is the last block of memory, set the OOM marker.
-						if next_idx == 0 {
-							(*base).length = OOM_MARKER;
-						}
-					}
-
-					return Ok(NonNull::slice_from_raw_parts(
-						NonNull::new_unchecked(avail_blocks_ptr.cast()),
-						size * B,
-					));
-				}
-
-				// Check if we've already made a whole loop around without finding anything.
-				if next_idx == 0 {
-					return Err(AllocError);
-				}
-
-				prev = curr;
-				curr = self.header_at(next_idx);
-			}
+			self.allocate_blocks(size, align)
+				.map(|p| NonNull::slice_from_raw_parts(p, layout.size()))
 		}
 	}
 
 	unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
-		// If the size is 0, the pointer is dangling, so do nothing.
-		if layout.size() == 0 {
+		let size = layout.size().div_ceil(B);
+
+		if size == 0 {
 			return;
 		}
 
-		let size = layout.size().div_ceil(B);
-		let freed_ptr = unsafe { &raw mut (*ptr.as_ptr().cast::<Block<B>>()).header };
-		let freed_idx = self.index_of(freed_ptr);
-		let base = self.base.get();
-		let before = self.header_before(freed_idx);
-
-		unsafe {
-			let prev_next = (*before).next as usize;
-			(*freed_ptr).next = prev_next as u16;
-			(*freed_ptr).length = size as u16;
-
-			// Try to merge with the next free block.
-			if freed_idx + size == prev_next {
-				let header_to_merge = self.header_at(prev_next);
-				(*freed_ptr).next = (*header_to_merge).next;
-				(*freed_ptr).length += (*header_to_merge).length;
-			}
-
-			// Try to merge with the previous free block.
-			if before.eq(&base) {
-				(*base).next = freed_idx as u16;
-				(*base).length = 0;
-			} else if self.index_of(before) + (*before).length as usize == freed_idx {
-				(*before).next = (*freed_ptr).next;
-				(*before).length += (*freed_ptr).length;
-			} else {
-				// No merge is possible.
-				(*before).next = freed_idx as u16;
-			}
-		}
+		// SAFETY: We just made sure that size != 0. Everything else is upheld by the caller.
+		unsafe { self.deallocate_blocks(ptr, size) };
 	}
 
 	unsafe fn grow(
@@ -322,61 +463,46 @@ where
 		old_layout: Layout,
 		new_layout: Layout,
 	) -> Result<NonNull<[u8]>, AllocError> {
-		let old_size = old_layout.size().div_ceil(B);
+		let old_size = old_layout.size() / B;
 		let new_size = new_layout.size().div_ceil(B);
+		let align = new_layout.align().div_ceil(B);
 
 		// If the size hasn't changed, do nothing.
-		let needed_chunks = new_size - old_size;
-		if needed_chunks == 0 {
+		if new_size == old_size {
 			return Ok(NonNull::slice_from_raw_parts(ptr, new_layout.size()));
 		}
 
 		// If the old size was 0, the pointer was dangling, so just allocate.
 		if old_size == 0 {
-			return self.allocate(new_layout);
+			// SAFETY: we know that `new_size` is non-zero, because we just made sure
+			// that `new_size != old_size`, and we know that `align` has a valid value.
+			return unsafe {
+				self.allocate_blocks(new_size, align)
+					.map(|p| NonNull::slice_from_raw_parts(p, new_layout.size()))
+			};
 		}
 
-		let curr_block: *mut Block<B> = ptr.as_ptr().cast();
-		let curr_idx = (curr_block.addr() - self.data.get().addr()) / B;
-		let prev_free_chunk = self.header_before(curr_idx);
-
 		unsafe {
-			// Check if there's room to grow.
-			// Note: `next_idx` must be directly after the current allocation.
-			// Also, the requested amount of chunks must be within the next free chunk.
-			let next_free_idx = (*prev_free_chunk).next as usize;
-			let next_free_chunk = self.header_at(next_free_idx);
-			let room_to_grow = (*next_free_chunk).length as usize;
+			// Try to grow in place.
+			// SAFETY: `ptr` and `old_size` are upheld by the caller. As for `new_size`,
+			// we have already made sure that `old_size != new_size`, and the fact that
+			// new_size >= old_size is upheld by the caller.
+			if self.grow_in_place(ptr, old_size, new_size).is_ok() {
+				Ok(NonNull::slice_from_raw_parts(ptr, new_size * B))
+			} else {
+				// Otherwise just reallocate and copy.
+				// SAFETY: We have made sure that `new_size > 0` and that `align` is valid.
+				let new = self.allocate_blocks(new_size, align)?;
 
-			if curr_idx + old_size == next_free_idx && needed_chunks <= room_to_grow {
-				let chunk_left_over = room_to_grow - needed_chunks;
-				if chunk_left_over > 0 {
-					let new_chunk_idx = next_free_idx + needed_chunks;
-					let new_chunk_head = self.header_at(new_chunk_idx);
+				// SAFETY: We are copying all the necessary bytes from `ptr` into `new`.
+				// `ptr` and `new` both point to an allocation of at least `old_layout.size()` bytes.
+				ptr::copy_nonoverlapping(ptr.as_ptr(), new.as_ptr() as _, old_layout.size());
 
-					// Insert the new chunk into the free list.
-					(*prev_free_chunk).next = new_chunk_idx as u16;
-					(*new_chunk_head).next = (*next_free_chunk).next;
-					(*new_chunk_head).length = chunk_left_over as u16;
-				} else {
-					// The free chunk is completely consumed.
-					(*prev_free_chunk).next = (*next_free_chunk).next;
+				// SAFETY: We already made sure that old_size > 0.
+				self.deallocate_blocks(ptr, old_size);
 
-					// If `prev_free_chunk` is the base pointer and we just set it to 0, we are OOM.
-					let base = self.base.get();
-					if prev_free_chunk.eq(&base) && (*next_free_chunk).next == 0 {
-						(*base).length = OOM_MARKER;
-					}
-				}
-
-				return Ok(NonNull::slice_from_raw_parts(ptr, new_layout.size()));
+				Ok(NonNull::slice_from_raw_parts(new, new_size * B))
 			}
-
-			// Otherwise just reallocate and copy.
-			let new = self.allocate(new_layout)?;
-			ptr::copy_nonoverlapping(ptr.as_ptr(), new.as_ptr() as _, old_layout.size());
-			self.deallocate(ptr, old_layout);
-			Ok(new)
 		}
 	}
 
@@ -386,9 +512,12 @@ where
 		old_layout: Layout,
 		new_layout: Layout,
 	) -> Result<NonNull<[u8]>, AllocError> {
+		let old_size = old_layout.size() / B;
+		let new_size = new_layout.size().div_ceil(B);
+
 		unsafe {
 			let new_ptr = self.grow(ptr, old_layout, new_layout)?;
-			let count = new_layout.size() - old_layout.size();
+			let count = (new_size - old_size) * B;
 			ptr::write_bytes(ptr.as_ptr().add(old_layout.size()), 0, count);
 			Ok(new_ptr)
 		}
@@ -404,52 +533,49 @@ where
 		let new_size = new_layout.size().div_ceil(B);
 
 		// Check if the size is zero, in which case the allocation should just be freed.
+		if old_size == 0 {
+			return Ok(NonNull::slice_from_raw_parts(ptr, 0));
+		}
+
+		// Check if the size is zero, in which case the allocation should just be freed.
 		if new_size == 0 {
-			unsafe { self.deallocate(ptr, old_layout) };
-			let dangling = NonNull::new(new_layout.align() as _).unwrap();
+			// SAFETY: The caller upholds that `ptr` and `old_size` are valid.
+			unsafe { self.deallocate_blocks(ptr, old_size) };
+			// SAFETY: alignment is always nonzero.
+			let dangling = unsafe { NonNull::new_unchecked(new_layout.align() as _) };
 			return Ok(NonNull::slice_from_raw_parts(dangling, 0));
 		}
 
 		// We have to reallocate only if the alignment isn't good enough anymore.
 		if ptr.as_ptr().addr() % new_layout.align() != 0 {
-			let new = self.allocate(new_layout)?;
+			// Since the address of `ptr` must be a multiple of `B` (upheld by the caller),
+			// entering this branch means that `new_layout.align() > B`.
+			let align = new_layout.align() / B;
+
 			unsafe {
+				// SAFETY: We just made sure that `new_size > 0`, and `align` is always valid.
+				let new = self.allocate_blocks(new_size, align)?;
+
+				// SAFETY: We are copying all the necessary bytes from `ptr` into `new`.
+				// `ptr` and `new` both point to an allocation of at least `old_layout.size()` bytes.
 				ptr::copy_nonoverlapping(ptr.as_ptr(), new.as_ptr() as _, old_layout.size());
-				self.deallocate(ptr, old_layout);
+
+				// SAFETY: We already made sure that old_size > 0.
+				self.deallocate_blocks(ptr, old_size);
+
+				return Ok(NonNull::slice_from_raw_parts(new, new_size));
 			}
-			return Ok(new);
 		}
 
 		// Check if the size hasn't changed.
-		let spare_blocks = old_size - new_size;
-		if spare_blocks == 0 {
+		if old_size == new_size {
 			return Ok(NonNull::slice_from_raw_parts(ptr, old_size));
 		}
 
-		// Shrink in place.
-		// This means that a new chunk will be created in the gap.
-		let curr_block: *mut Block<B> = ptr.as_ptr().cast();
-		let curr_idx = (curr_block.addr() - self.data.get().addr()) / B;
-		let new_idx = curr_idx + new_size;
-
+		// SAFETY: We just made sure that new_size > 0 and old_size > new_size,
+		// and `ptr` and `old_size` are valid (upheld by the caller).
 		unsafe {
-			// We are definitely no longer OOM.
-			(*self.base.get()).length = 0;
-
-			// Check if we can merge the block with a chunk immediately after.
-			let prev_free_chunk = self.header_before(curr_idx);
-			let next_free_idx = (*prev_free_chunk).next as usize;
-			let new_chunk = &raw mut (*curr_block.add(new_size)).header;
-
-			(*prev_free_chunk).next = new_idx as u16;
-			if new_idx + spare_blocks == next_free_idx {
-				let next_free_chunk = self.header_at(next_free_idx);
-				(*new_chunk).next = (*next_free_chunk).next;
-				(*new_chunk).length = spare_blocks as u16 + (*next_free_chunk).length;
-			} else {
-				(*new_chunk).next = next_free_idx as u16;
-				(*new_chunk).length = spare_blocks as u16;
-			}
+			self.shrink_in_place(ptr, old_size, new_size);
 		}
 
 		Ok(NonNull::slice_from_raw_parts(ptr, new_size))

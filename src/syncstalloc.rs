@@ -1,21 +1,18 @@
 use core::alloc::{AllocError, Allocator, GlobalAlloc, Layout};
 use core::fmt::{self, Debug, Formatter};
-use core::ptr::{self, NonNull};
-use std::sync::Mutex;
+use core::ptr::NonNull;
+use std::sync::{Mutex, MutexGuard};
 
-use crate::Stalloc;
+use crate::UnsafeStalloc;
 use crate::align::*;
 
-/// A wrapper around `Stalloc` that implements `Sync` and `GlobalAlloc`.
-/// This type is safe to create because it prevents data races using a Mutex.
+/// A wrapper around `UnsafeStalloc` that is safe to create because it prevents data races using a Mutex.
 /// In comparison to `UnsafeStalloc`, the Mutex may cause a slight overhead.
-/// I don't think it's possible for this Mutex to be poisoned, but if it does,
-/// all accesses to the allocator will fail.
 pub struct SyncStalloc<const L: usize, const B: usize>
 where
 	Align<B>: Alignment,
 {
-	inner: Mutex<Stalloc<L, B>>,
+	inner: Mutex<UnsafeStalloc<L, B>>,
 }
 
 impl<const L: usize, const B: usize> SyncStalloc<L, B>
@@ -25,7 +22,8 @@ where
 	pub const fn new() -> Self {
 		assert!(L >= 1 && L <= 0xffff, "block count must be in 1..65536");
 		Self {
-			inner: Mutex::new(Stalloc::<L, B>::new()),
+			// SAFETY: The Mutex prevents concurrent access to the `UnsafeStalloc`.
+			inner: Mutex::new(unsafe { UnsafeStalloc::<L, B>::new() }),
 		}
 	}
 
@@ -33,10 +31,9 @@ where
 	/// If this is false, then you are guaranteed to be able to allocate
 	/// a layout with a size and alignment of `B` bytes.
 	/// This runs in O(1).
-	/// Unlike `Stalloc::is_oom`, this method can return `None` if the Mutex is
-	/// poisoned, meaning that we weren't able to acquire a lock.
-	pub fn is_oom(&self) -> Option<bool> {
-		self.inner.lock().ok().map(|locked| locked.is_oom())
+	pub fn is_oom(&self) -> bool {
+		// SAFETY: See above.
+		unsafe { self.inner.lock().unwrap_unchecked().is_oom() }
 	}
 
 	/// Checks if the allocator is empty.
@@ -44,10 +41,9 @@ where
 	/// a layout with a size of `B * L` bytes and an alignment of `B` bytes.
 	/// If this is false, then this is guaranteed to be impossible.
 	/// This runs in O(1).
-	/// Unlike `Stalloc::is_oom`, this method can return `None` if the Mutex is
-	/// poisoned, meaning that we weren't able to acquire a lock.
-	pub fn is_empty(&self) -> Option<bool> {
-		self.inner.lock().ok().map(|locked| locked.is_empty())
+	pub fn is_empty(&self) -> bool {
+		// SAFETY: See above.
+		unsafe { self.inner.lock().unwrap_unchecked().is_empty() }
 	}
 
 	/// # Safety
@@ -55,12 +51,14 @@ where
 	/// Calling this function immediately invalidates all pointers into the allocator. Calling
 	/// deallocate() with an invalidated pointer may result in the free list being corrupted.
 	pub unsafe fn clear(&self) {
-		if let Ok(locked) = self.inner.lock() {
-			// SAFETY: Upheld by the caller.
-			unsafe {
-				locked.clear();
-			}
-		}
+		// SAFETY: See above.
+		unsafe { self.inner.lock().unwrap_unchecked().clear() }
+	}
+
+	fn acquire_locked(&self) -> MutexGuard<UnsafeStalloc<L, B>> {
+		// Note: if this Mutex is poisoned, it means that one of the allocation functions panicked,
+		// which is already declared to be UB. Therefore, we can assume that this is never poisoned.
+		unsafe { self.inner.lock().unwrap_unchecked() }
 	}
 }
 
@@ -78,8 +76,8 @@ where
 	Align<B>: Alignment,
 {
 	fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-		let locked = self.inner.lock().map_err(|_| fmt::Error)?;
-		write!(f, "{:?}", locked)
+		// SAFETY: See above.
+		write!(f, "{:?}", self.acquire_locked())
 	}
 }
 
@@ -88,58 +86,23 @@ where
 	Align<B>: Alignment,
 {
 	unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-		self.inner
-			.lock()
-			.ok()
-			.and_then(|locked_stalloc| locked_stalloc.allocate(layout).ok())
-			.map(|p| p.as_ptr().cast())
-			.unwrap_or(ptr::null_mut())
+		// SAFETY: upheld by the caller.
+		unsafe { self.acquire_locked().alloc(layout) }
 	}
 
 	unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-		self.inner
-			.lock()
-			.ok()
-			.and_then(|locked_inner| locked_inner.allocate_zeroed(layout).ok())
-			.map(|p| p.as_ptr().cast())
-			.unwrap_or(ptr::null_mut())
+		// SAFETY: upheld by the caller.
+		unsafe { self.acquire_locked().alloc_zeroed(layout) }
 	}
 
 	unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
 		// SAFETY: upheld by the caller.
-		self.inner.lock().ok().inspect(|locked_inner| unsafe {
-			locked_inner.deallocate(NonNull::new_unchecked(ptr), layout)
-		});
+		unsafe { self.acquire_locked().dealloc(ptr, layout) }
 	}
 
 	unsafe fn realloc(&self, ptr: *mut u8, old_layout: Layout, new_size: usize) -> *mut u8 {
 		// SAFETY: upheld by the caller.
-		let new_layout = unsafe { Layout::from_size_align_unchecked(new_size, old_layout.align()) };
-
-		if new_size > old_layout.size() {
-			// SAFETY: upheld by the caller.
-			unsafe {
-				let nonnull = NonNull::new_unchecked(ptr);
-				self.inner
-					.lock()
-					.ok()
-					.and_then(|locked| locked.grow(nonnull, old_layout, new_layout).ok())
-					.map(|p| p.as_ptr().cast())
-					.unwrap_or(ptr::null_mut())
-			}
-		} else {
-			// SAFETY: upheld by the caller.
-			// Note: if `new_size` == `old_layout.size()`, this should be a no-op.
-			unsafe {
-				let nonnull = NonNull::new_unchecked(ptr);
-				self.inner
-					.lock()
-					.ok()
-					.and_then(|locked| locked.shrink(nonnull, old_layout, new_layout).ok())
-					.map(|p| p.as_ptr().cast())
-					.unwrap_or(ptr::null_mut())
-			}
-		}
+		unsafe { self.acquire_locked().realloc(ptr, old_layout, new_size) }
 	}
 }
 
@@ -148,26 +111,19 @@ where
 	Align<B>: Alignment,
 {
 	fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
-		self.inner
-			.lock()
-			.map(|locked_stalloc| locked_stalloc.allocate(layout))
-			.unwrap_or(Err(AllocError))
+		// SAFETY: Upheld by the caller.
+		self.acquire_locked().allocate(layout)
 	}
 
 	unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
 		// SAFETY: Upheld by the caller.
 		unsafe {
-			if let Ok(locked_stalloc) = self.inner.lock() {
-				locked_stalloc.deallocate(ptr, layout);
-			}
+			self.acquire_locked().deallocate(ptr, layout);
 		}
 	}
 
 	fn allocate_zeroed(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
-		self.inner
-			.lock()
-			.map(|locked_stalloc| locked_stalloc.allocate(layout))
-			.unwrap_or(Err(AllocError))
+		self.acquire_locked().allocate_zeroed(layout)
 	}
 
 	unsafe fn grow(
@@ -177,12 +133,7 @@ where
 		new_layout: Layout,
 	) -> Result<NonNull<[u8]>, std::alloc::AllocError> {
 		// SAFETY: Upheld by the caller.
-		unsafe {
-			self.inner
-				.lock()
-				.map(|locked_stalloc| locked_stalloc.grow(ptr, old_layout, new_layout))
-				.unwrap_or(Err(AllocError))
-		}
+		unsafe { self.acquire_locked().grow(ptr, old_layout, new_layout) }
 	}
 
 	unsafe fn grow_zeroed(
@@ -193,10 +144,8 @@ where
 	) -> Result<NonNull<[u8]>, std::alloc::AllocError> {
 		// SAFETY: Upheld by the caller.
 		unsafe {
-			self.inner
-				.lock()
-				.map(|locked_stalloc| locked_stalloc.grow_zeroed(ptr, old_layout, new_layout))
-				.unwrap_or(Err(AllocError))
+			self.acquire_locked()
+				.grow_zeroed(ptr, old_layout, new_layout)
 		}
 	}
 
@@ -207,12 +156,7 @@ where
 		new_layout: Layout,
 	) -> Result<NonNull<[u8]>, std::alloc::AllocError> {
 		// SAFETY: Upheld by the caller.
-		unsafe {
-			self.inner
-				.lock()
-				.map(|locked_stalloc| locked_stalloc.shrink(ptr, old_layout, new_layout))
-				.unwrap_or(Err(AllocError))
-		}
+		unsafe { self.acquire_locked().shrink(ptr, old_layout, new_layout) }
 	}
 
 	fn by_ref(&self) -> &Self

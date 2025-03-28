@@ -1,8 +1,15 @@
 Stalloc (Stack + alloc) is a fast first-fit memory allocator. From my benchmarking, it can be over 3x as fast as the default OS allocator! This is because all memory is allocated from the stack, which allows it to avoid all OS overhead. Since it doesn't rely on the OS (aside from `SyncStalloc`), this library is `no_std` compatible.
 
-Note that Stalloc uses a fixed amount of memory. If it ever runs out, it could result in your program crashing immediately. Stalloc is especially good for programs that make lots of small allocations. It's also extremely memory-efficient — you can create a "heap" containing less than a dozen bytes!
+Note that Stalloc uses a fixed amount of memory. If it ever runs out, it could result in your program crashing immediately. Stalloc is especially good for programs that make lots of small allocations.
 
-When you create a Stallocator, you configure it with two numbers: `L` is the number of blocks, and `B` is the size of each block in bytes. The total size of this type comes out to `L * B + 4` bytes, of which `L * B` can be used (4 bytes are needed to hold some metadata).
+When you create a Stallocator, you configure it with two numbers: `L` is the number of blocks, and `B` is the size of each block in bytes. The total size of this type comes out to `L * B + 4` bytes, of which `L * B` can be used (4 bytes are needed to hold some metadata). The buffer is automatically aligned to `B`. If you want it to be more aligned than that, you can create a wrapper like this:
+
+```rs
+#[repr(align(16))] // aligned to 16 bytes
+struct MoreAlignedStalloc(Stalloc<8, 4>); // eight blocks of four bytes each
+```
+
+Stalloc is extremely memory-efficient. With that `MoreAlignedStalloc`, you can allocate eight `Box<u32>`s, free them, then allocate four `Box<u64>`s, free them, and then allocate two `Box<u128>`s.
 
 There are three main ways to use this library:
 
@@ -43,7 +50,7 @@ fn main() {
 	// allocations and stuff
 	let v = vec![1, 2, 3, 4, 5];
 
-	// we can check the on the allocator state:
+	// we can check on the allocator state:
 	println!("{GLOBAL:?}");
 }
 ```

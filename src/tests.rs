@@ -1,12 +1,21 @@
+#![allow(clippy::nursery)]
 use crate::Stalloc;
-use std::mem;
+
+extern crate alloc;
+extern crate std;
+use alloc::boxed::Box;
+use alloc::vec::Vec;
+use core::mem;
+use core::mem::MaybeUninit;
+#[allow(unused_imports)]
+use std::dbg;
 
 #[test]
 fn test_vec() {
 	let alloc = Stalloc::<1, 4>::new();
 	let mut v: Vec<u8, _> = Vec::with_capacity_in(4, &alloc);
-	for _ in 0..v.capacity() {
-		v.push(42);
+	for i in 0..v.capacity() {
+		v.push(42 + i as u8);
 	}
 }
 
@@ -14,12 +23,12 @@ fn test_vec() {
 fn test_2_vecs() {
 	let alloc = Stalloc::<2, 4>::new();
 	let mut v: Vec<u8, _> = Vec::with_capacity_in(4, &alloc);
-	for _ in 0..v.capacity() {
-		v.push(42);
+	for i in 0..v.capacity() {
+		v.push(42 + i as u8);
 	}
 	let mut v: Vec<u8, _> = Vec::with_capacity_in(4, &alloc);
-	for _ in 0..v.capacity() {
-		v.push(42);
+	for i in 0..v.capacity() {
+		v.push(42 + i as u8);
 	}
 }
 
@@ -33,24 +42,25 @@ fn test_differently_sized_vecs() {
 	let _v: Vec<u32, _> = Vec::with_capacity_in(5, &alloc);
 	let _v: Vec<u32, _> = Vec::with_capacity_in(6, &alloc);
 	let _v: Vec<u32, _> = Vec::with_capacity_in(7, &alloc);
+	assert!(alloc.is_oom());
 }
 
 #[test]
-#[should_panic]
+#[should_panic(expected = "TryReserveError")]
 fn test_oom() {
 	let alloc = Stalloc::<3, 4>::new();
 	let mut v: Vec<u8, _> = Vec::try_with_capacity_in(8, &alloc).unwrap();
-	for _ in 0..v.capacity() {
-		v.push(42);
+	for i in 0..v.capacity() {
+		v.push(42 + i as u8);
 	}
 	let mut v: Vec<u8, _> = Vec::try_with_capacity_in(8, &alloc).unwrap();
-	for _ in 0..v.capacity() {
-		v.push(42);
+	for i in 0..v.capacity() {
+		v.push(42 + i as u8);
 	}
 }
 
 #[test]
-#[should_panic]
+#[should_panic(expected = "TryReserveError")]
 fn test_oom2() {
 	let alloc = Stalloc::<4, 4>::new();
 	let _v: Vec<u32, _> = Vec::try_with_capacity_in(1, &alloc).unwrap();
@@ -61,25 +71,25 @@ fn test_oom2() {
 }
 
 #[test]
-#[should_panic]
+#[should_panic(expected = "block count must be in 1..65536")]
 fn test_invalid_new1() {
 	let _alloc = Stalloc::<0, 4>::new();
 }
 
 #[test]
-#[should_panic]
+#[should_panic(expected = "block count must be in 1..65536")]
 fn test_invalid_new2() {
 	let _alloc = Stalloc::<100_000, 4>::new();
 }
 
 #[test]
-#[should_panic]
+#[should_panic(expected = "block size must be at least 4 bytes")]
 fn test_invalid_new3() {
 	let _alloc = Stalloc::<2, 2>::new();
 }
 
 #[test]
-#[should_panic]
+#[should_panic(expected = "block size must be at least 4 bytes")]
 fn test_invalid_new4() {
 	let _alloc = Stalloc::<2, 1>::new();
 }
@@ -236,8 +246,8 @@ fn test_simple_push() {
 	let alloc = Stalloc::<128, 4>::new();
 
 	let mut v: Vec<u32, _> = Vec::new_in(&alloc);
-	for _ in 0..128 {
-		v.push(42);
+	for i in 0..128 {
+		v.push(42 + i);
 	}
 	assert!(alloc.is_oom());
 }
@@ -285,8 +295,8 @@ fn grow_from_1() {
 	let alloc = Stalloc::<256, 8>::new();
 
 	let mut v = Vec::with_capacity_in(1, &alloc);
-	for _ in 0..256 {
-		v.push(42);
+	for i in 0..256 {
+		v.push(42 + i);
 	}
 }
 
@@ -377,4 +387,41 @@ fn test_large_and_small_alloc() {
 	drop(b);
 
 	assert!(alloc.is_empty());
+}
+
+#[test]
+fn test_boxes_vec_grow() {
+	let alloc = Stalloc::<12, 4>::new();
+
+	let a = Box::new_in(MaybeUninit::<u32>::uninit(), &alloc);
+	let b = Box::new_in(5, &alloc);
+	let mut c = Vec::with_capacity_in(9, &alloc);
+	drop(b);
+	c.reserve_exact(10);
+	c.push(1);
+	drop(a);
+}
+
+#[test]
+fn test_multiple_shrink() {
+	let alloc = Stalloc::<24, 4>::new();
+
+	for i in 0..24 {
+		let mut v: Vec<i32, _> = Vec::with_capacity_in(24 - i, &alloc);
+		v.shrink_to(1);
+		mem::forget(v);
+	}
+
+	assert!(alloc.is_oom());
+}
+
+#[test]
+fn test_zeroed() {
+	let alloc = Stalloc::<256, 4>::new();
+
+	let mut v: Vec<i32, _> = Vec::with_capacity_in(256, &alloc);
+	v.extend_from_slice(&[0; 256]);
+	assert!(v.iter().all(|&b| b == 0));
+
+	assert!(alloc.is_oom());
 }

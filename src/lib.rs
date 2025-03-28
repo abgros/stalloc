@@ -1,8 +1,13 @@
 #![no_std]
 #![deny(missing_docs)]
 #![cfg_attr(feature = "allocator_api", feature(allocator_api))]
+#![warn(clippy::nursery, clippy::pedantic)]
+#![allow(clippy::cast_possible_truncation)]
 
-//! This crate provides a fast first-fit memory allocator.
+//! Stalloc (Stack + alloc) is a fast first-fit memory allocator. From my benchmarking,
+//! it can be over 3x as fast as the default OS allocator! This is because all memory
+//! is allocated from the stack, which allows it to avoid all OS overhead. Since it
+//! doesn't rely on the OS (aside from `SyncStalloc`), this library is `no_std` compatible.
 
 use core::cell::UnsafeCell;
 use core::fmt::{self, Debug, Formatter};
@@ -31,12 +36,14 @@ pub use syncstalloc::*;
 mod tests;
 
 #[derive(Clone, Copy)]
+#[repr(C)]
 struct Header {
 	next: u16,
 	length: u16,
 }
 
 #[derive(Clone, Copy)]
+#[repr(C)]
 union Block<const B: usize>
 where
 	Align<B>: Alignment,
@@ -44,6 +51,14 @@ where
 	header: Header,
 	bytes: [MaybeUninit<u8>; B],
 	_align: Align<B>,
+}
+
+/// This function is always safe to call, as `ptr` is not dereferenced.
+fn header_in_block<const B: usize>(ptr: *mut Block<B>) -> *mut Header
+where
+	Align<B>: Alignment,
+{
+	unsafe { &raw mut (*ptr).header }
 }
 
 // The `base` Header has a unique meaning here. Because `base.length` is useless (always 0),
@@ -66,20 +81,21 @@ const OOM_MARKER: u16 = u16::MAX;
 ///
 /// Note that `Stalloc` cannot be used as a global allocator because it is not thread-safe. To switch out the global
 /// allocator, use `SyncStalloc` or `UnsafeStalloc`, which can be used concurrently.
+#[repr(C)]
 pub struct Stalloc<const L: usize, const B: usize>
 where
 	Align<B>: Alignment,
 {
-	base: UnsafeCell<Header>,
 	data: UnsafeCell<[Block<B>; L]>,
+	base: UnsafeCell<Header>,
 }
 
-// Public API
 impl<const L: usize, const B: usize> Stalloc<L, B>
 where
 	Align<B>: Alignment,
 {
 	/// Initializes a new empty `Stalloc` instance.
+	#[must_use]
 	pub const fn new() -> Self {
 		assert!(L >= 1 && L <= 0xffff, "block count must be in 1..65536");
 		assert!(B >= 4, "block size must be at least 4 bytes");
@@ -94,7 +110,7 @@ where
 			length: L as u16,
 		};
 
-		Stalloc {
+		Self {
 			base: UnsafeCell::new(Header { next: 0, length: 0 }),
 			data: UnsafeCell::new(blocks),
 		}
@@ -136,12 +152,16 @@ where
 	/// # Safety
 	///
 	/// `size` must be nonzero, and `align` must be a power of 2 in the range `1..=2^29 / B`.
+	///
+	/// # Errors
+	///
+	/// Will return `AllocError` if the allocation was unsuccessful, in which case this function was a no-op.
 	pub unsafe fn allocate_blocks(
 		&self,
 		size: usize,
 		align: usize,
 	) -> Result<NonNull<u8>, AllocError> {
-		// Assert unsafe preconditions to help catch bugs.
+		// Assert unsafe preconditions.
 		unsafe {
 			assert_unchecked(size >= 1 && align.is_power_of_two() && align < 2usize.pow(29) / B);
 		}
@@ -224,7 +244,7 @@ where
 			assert_unchecked(size >= 1 && size <= L);
 		}
 
-		let freed_ptr = unsafe { &raw mut (*ptr.as_ptr().cast::<Block<B>>()).header };
+		let freed_ptr = header_in_block(ptr.as_ptr().cast());
 		let freed_idx = self.index_of(freed_ptr);
 		let base = self.base.get();
 		let before = self.header_before(freed_idx);
@@ -274,15 +294,14 @@ where
 		let spare_blocks = old_size - new_size;
 
 		unsafe {
-			// We are definitely no longer OOM.
-			(*self.base.get()).length = 0;
-
 			// Check if we can merge the block with a chunk immediately after.
 			let prev_free_chunk = self.header_before(curr_idx);
-			let next_free_idx = (*prev_free_chunk).next as usize;
-			let new_chunk = &raw mut (*curr_block.add(new_size)).header;
+
+			let next_free_idx = (*prev_free_chunk).next as usize; // possibly zero
+			let new_chunk = header_in_block(curr_block.add(new_size));
 
 			(*prev_free_chunk).next = new_idx as u16;
+
 			if new_idx + spare_blocks == next_free_idx {
 				let next_free_chunk = self.header_at(next_free_idx);
 				(*new_chunk).next = (*next_free_chunk).next;
@@ -291,6 +310,9 @@ where
 				(*new_chunk).next = next_free_idx as u16;
 				(*new_chunk).length = spare_blocks as u16;
 			}
+
+			// We are definitely no longer OOM.
+			(*self.base.get()).length = 0;
 		}
 	}
 
@@ -299,6 +321,10 @@ where
 	/// # Safety
 	///
 	/// `ptr` must point to a valid allocation of `old_size` blocks. Also, `new_size > old_size`.
+	///
+	/// # Errors
+	///
+	/// Will return `AllocError` if the grow was unsuccessful, in which case this function was a no-op.
 	pub unsafe fn grow_in_place(
 		&self,
 		ptr: NonNull<u8>,
@@ -310,46 +336,127 @@ where
 			assert_unchecked(old_size >= 1 && old_size <= L && new_size > old_size);
 		}
 
-		let needed_blocks = new_size - old_size;
 		let curr_block: *mut Block<B> = ptr.as_ptr().cast();
 		let curr_idx = (curr_block.addr() - self.data.get().addr()) / B;
 		let prev_free_chunk = self.header_before(curr_idx);
 
 		unsafe {
 			let next_free_idx = (*prev_free_chunk).next as usize;
+
+			// The next free chunk must be directly adjacent to the current allocation.
+			if curr_idx + old_size != next_free_idx {
+				return Err(AllocError);
+			}
+
 			let next_free_chunk = self.header_at(next_free_idx);
 			let room_to_grow = (*next_free_chunk).length as usize;
 
-			// Check if there's room to grow.
-			// Note: `next_idx` must be directly after the current allocation.
-			// Also, the requested amount of chunks must be within the next free chunk.
-			if curr_idx + old_size == next_free_idx && needed_blocks <= room_to_grow {
-				// Check if there would be any blocks left over after growing into the next chunk.
-				let blocks_left_over = room_to_grow - needed_blocks;
-
-				if blocks_left_over > 0 {
-					let new_chunk_idx = next_free_idx + needed_blocks;
-					let new_chunk_head = self.header_at(new_chunk_idx);
-
-					// Insert the new chunk into the free list.
-					(*prev_free_chunk).next = new_chunk_idx as u16;
-					(*new_chunk_head).next = (*next_free_chunk).next;
-					(*new_chunk_head).length = blocks_left_over as u16;
-				} else {
-					// The free chunk is completely consumed.
-					(*prev_free_chunk).next = (*next_free_chunk).next;
-
-					// If `prev_free_chunk` is the base pointer and we just set it to 0, we are OOM.
-					let base = self.base.get();
-					if prev_free_chunk.eq(&base) && (*next_free_chunk).next == 0 {
-						(*base).length = OOM_MARKER;
-					}
-				}
-
-				Ok(())
-			} else {
-				Err(AllocError)
+			// There must be enough room to grow.
+			let needed_blocks = new_size - old_size;
+			if needed_blocks > room_to_grow {
+				return Err(AllocError);
 			}
+
+			// Check if there would be any blocks left over after growing into the next chunk.
+			let blocks_left_over = room_to_grow - needed_blocks;
+
+			if blocks_left_over > 0 {
+				let new_chunk_idx = next_free_idx + needed_blocks;
+				let new_chunk_head = self.header_at(new_chunk_idx);
+
+				// Insert the new chunk into the free list.
+				(*prev_free_chunk).next = new_chunk_idx as u16;
+				(*new_chunk_head).next = (*next_free_chunk).next;
+				(*new_chunk_head).length = blocks_left_over as u16;
+			} else {
+				// The free chunk is completely consumed.
+				(*prev_free_chunk).next = (*next_free_chunk).next;
+
+				// If `prev_free_chunk` is the base pointer and we just set it to 0, we are OOM.
+				let base = self.base.get();
+				if prev_free_chunk.eq(&base) && (*next_free_chunk).next == 0 {
+					(*base).length = OOM_MARKER;
+				}
+			}
+
+			Ok(())
+		}
+	}
+
+	/// Tries to grow the current allocation in-place. If that isn't possible, the allocator grows by as much
+	/// as it is able to, and the new length of the allocation is returned. The new length is guaranteed to be
+	/// in the range `old_size..=new_size`.
+	/// # Safety
+	///
+	/// `ptr` must point to a valid allocation of `old_size` blocks. Also, `new_size > old_size`.
+	/// ```
+	/// use stalloc::Stalloc;
+	///
+	/// let s = Stalloc::<7, 4>::new();
+	/// unsafe {
+	///     let ptr = s.allocate_blocks(3, 1).unwrap(); // allocate 3 blocks
+	///     let new_size = s.grow_up_to(ptr, 3, 9999); // try to grow to a ridiculous amount
+	///     assert_eq!(new_size, 7); // can only grow up to 7
+	/// }
+	/// ```
+	///
+	/// ```
+	/// use stalloc::Stalloc;
+	///
+	/// let s = Stalloc::<21, 16>::new();
+	/// unsafe {
+	///     let ptr = s.allocate_blocks(9, 1).unwrap(); // allocate 9 blocks
+	///     let new_size = s.grow_up_to(ptr, 9, 21);
+	///     assert_eq!(new_size, 21); // grow was successful
+	/// }
+	/// ```
+	pub unsafe fn grow_up_to(&self, ptr: NonNull<u8>, old_size: usize, new_size: usize) -> usize {
+		// Assert unsafe preconditions.
+		unsafe {
+			assert_unchecked(old_size >= 1 && old_size <= L && new_size > old_size);
+		}
+
+		let curr_block: *mut Block<B> = ptr.as_ptr().cast();
+		let curr_idx = (curr_block.addr() - self.data.get().addr()) / B;
+		let prev_free_chunk = self.header_before(curr_idx);
+
+		unsafe {
+			let next_free_idx = (*prev_free_chunk).next as usize;
+
+			// The next free chunk must be directly adjacent to the current allocation.
+			if curr_idx + old_size != next_free_idx {
+				return old_size;
+			}
+
+			let next_free_chunk = self.header_at(next_free_idx);
+			let room_to_grow = (*next_free_chunk).length as usize;
+
+			// If there isn't enough room to grow, grow as much as possible.
+			let needed_blocks = (new_size - old_size).min(room_to_grow);
+
+			// Check if there would be any blocks left over after growing into the next chunk.
+			let blocks_left_over = room_to_grow - needed_blocks;
+
+			if blocks_left_over > 0 {
+				let new_chunk_idx = next_free_idx + needed_blocks;
+				let new_chunk_head = self.header_at(new_chunk_idx);
+
+				// Insert the new chunk into the free list.
+				(*prev_free_chunk).next = new_chunk_idx as u16;
+				(*new_chunk_head).next = (*next_free_chunk).next;
+				(*new_chunk_head).length = blocks_left_over as u16;
+			} else {
+				// The free chunk is completely consumed.
+				(*prev_free_chunk).next = (*next_free_chunk).next;
+
+				// If `prev_free_chunk` is the base pointer and we just set it to 0, we are OOM.
+				let base = self.base.get();
+				if prev_free_chunk.eq(&base) && (*next_free_chunk).next == 0 {
+					(*base).length = OOM_MARKER;
+				}
+			}
+
+			old_size + needed_blocks
 		}
 	}
 }
@@ -368,14 +475,14 @@ where
 	}
 
 	/// Safety precondition: idx must be in `0..L`.
-	unsafe fn block_at(&self, idx: usize) -> *mut Block<B> {
+	const unsafe fn block_at(&self, idx: usize) -> *mut Block<B> {
 		let root: *mut Block<B> = self.data.get().cast();
 		unsafe { root.add(idx) }
 	}
 
 	/// Safety precondition: idx must be in `0..L`.
 	unsafe fn header_at(&self, idx: usize) -> *mut Header {
-		unsafe { &raw mut (*self.block_at(idx)).header }
+		header_in_block(unsafe { self.block_at(idx) })
 	}
 
 	/// This function always is safe to call. If `idx` is very large,
@@ -457,17 +564,15 @@ where
 		let size = layout.size().div_ceil(B);
 		let align = layout.align().div_ceil(B);
 
-		// If `size` is zero, give away some random pointer since it can't be used anyway.
+		// If `size` is zero, give away a dangling pointer.
 		if size == 0 {
 			let dangling = NonNull::new(layout.align() as _).unwrap();
 			return Ok(NonNull::slice_from_raw_parts(dangling, 0));
 		}
 
 		// SAFETY: We have made sure that `size` and `align` are valid.
-		unsafe {
-			self.allocate_blocks(size, align)
-				.map(|p| NonNull::slice_from_raw_parts(p, layout.size()))
-		}
+		unsafe { self.allocate_blocks(size, align) }
+			.map(|p| NonNull::slice_from_raw_parts(p, layout.size()))
 	}
 
 	unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
@@ -520,7 +625,7 @@ where
 
 				// SAFETY: We are copying all the necessary bytes from `ptr` into `new`.
 				// `ptr` and `new` both point to an allocation of at least `old_layout.size()` bytes.
-				ptr::copy_nonoverlapping(ptr.as_ptr(), new.as_ptr() as _, old_layout.size());
+				ptr::copy_nonoverlapping(ptr.as_ptr(), new.as_ptr().cast(), old_layout.size());
 
 				// SAFETY: We already made sure that old_size > 0.
 				self.deallocate_blocks(ptr, old_size);
@@ -542,7 +647,7 @@ where
 		unsafe {
 			let new_ptr = self.grow(ptr, old_layout, new_layout)?;
 			let count = (new_size - old_size) * B;
-			ptr::write_bytes(ptr.as_ptr().add(old_layout.size()), 0, count);
+			ptr.as_ptr().add(old_layout.size()).write_bytes(0, count);
 			Ok(new_ptr)
 		}
 	}
@@ -556,18 +661,20 @@ where
 		let old_size = old_layout.size().div_ceil(B);
 		let new_size = new_layout.size().div_ceil(B);
 
-		// Check if the size is zero, in which case the allocation should just be freed.
-		if old_size == 0 {
-			return Ok(NonNull::slice_from_raw_parts(ptr, 0));
-		}
-
-		// Check if the size is zero, in which case the allocation should just be freed.
+		// Check if the old size is zero, in which case we can just return a dangling pointer.
 		if new_size == 0 {
-			// SAFETY: The caller upholds that `ptr` and `old_size` are valid.
-			unsafe { self.deallocate_blocks(ptr, old_size) };
-			// SAFETY: alignment is always nonzero.
-			let dangling = unsafe { NonNull::new_unchecked(new_layout.align() as _) };
-			return Ok(NonNull::slice_from_raw_parts(dangling, 0));
+			unsafe {
+				// SAFETY: If `old_size` isn't zero, we need to free it. The caller
+				// upholds that `ptr` and `old_size` are valid.
+				if old_size != 0 {
+					self.deallocate_blocks(ptr, old_size);
+				}
+
+				// SAFETY: Alignment is always nonzero.
+				let dangling = NonNull::new_unchecked(new_layout.align() as _);
+
+				return Ok(NonNull::slice_from_raw_parts(dangling, 0));
+			}
 		}
 
 		// We have to reallocate only if the alignment isn't good enough anymore.
@@ -582,7 +689,7 @@ where
 
 				// SAFETY: We are copying all the necessary bytes from `ptr` into `new`.
 				// `ptr` and `new` both point to an allocation of at least `old_layout.size()` bytes.
-				ptr::copy_nonoverlapping(ptr.as_ptr(), new.as_ptr() as _, old_layout.size());
+				ptr::copy_nonoverlapping(ptr.as_ptr(), new.as_ptr().cast(), old_layout.size());
 
 				// SAFETY: We already made sure that old_size > 0.
 				self.deallocate_blocks(ptr, old_size);

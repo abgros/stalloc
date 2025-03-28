@@ -5,17 +5,16 @@ use core::ops::Deref;
 use core::ptr::{self, NonNull};
 
 use crate::Stalloc;
-use crate::align::*;
+use crate::align::{Align, Alignment};
 
 /// A wrapper around `Stalloc` that implements `Sync` and `GlobalAlloc`.
+///
 /// This type is unsafe to create, because it does not prevent data races.
 /// Therefore, it is encouraged to only use it in single-threaded environments.
-pub struct UnsafeStalloc<const L: usize, const B: usize>
+#[repr(transparent)]
+pub struct UnsafeStalloc<const L: usize, const B: usize>(Stalloc<L, B>)
 where
-	Align<B>: Alignment,
-{
-	inner: Stalloc<L, B>,
-}
+	Align<B>: Alignment;
 
 impl<const L: usize, const B: usize> Deref for UnsafeStalloc<L, B>
 where
@@ -24,7 +23,7 @@ where
 	type Target = Stalloc<L, B>;
 
 	fn deref(&self) -> &Self::Target {
-		&self.inner
+		&self.0
 	}
 }
 
@@ -33,7 +32,7 @@ where
 	Align<B>: Alignment,
 {
 	fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-		write!(f, "{:?}", self.inner)
+		write!(f, "{:?}", self.0)
 	}
 }
 
@@ -45,10 +44,9 @@ where
 	///
 	/// `UnsafeStalloc` does not prevent data races. It is strongly recommend
 	/// to only use it in a single-threaded environment.
+	#[must_use]
 	pub const unsafe fn new() -> Self {
-		Self {
-			inner: Stalloc::<L, B>::new(),
-		}
+		Self(Stalloc::<L, B>::new())
 	}
 }
 
@@ -63,16 +61,16 @@ where
 	Align<B>: Alignment,
 {
 	fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
-		self.inner.allocate(layout)
+		self.0.allocate(layout)
 	}
 
 	unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
 		// SAFETY: Upheld by the caller.
-		unsafe { self.inner.deallocate(ptr, layout) }
+		unsafe { self.0.deallocate(ptr, layout) }
 	}
 
 	fn allocate_zeroed(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
-		self.inner.allocate_zeroed(layout)
+		self.0.allocate_zeroed(layout)
 	}
 
 	unsafe fn grow(
@@ -82,7 +80,7 @@ where
 		new_layout: Layout,
 	) -> Result<NonNull<[u8]>, AllocError> {
 		// SAFETY: Upheld by the caller.
-		unsafe { self.inner.grow(ptr, old_layout, new_layout) }
+		unsafe { self.0.grow(ptr, old_layout, new_layout) }
 	}
 
 	unsafe fn grow_zeroed(
@@ -92,7 +90,7 @@ where
 		new_layout: Layout,
 	) -> Result<NonNull<[u8]>, AllocError> {
 		// SAFETY: Upheld by the caller.
-		unsafe { self.inner.grow_zeroed(ptr, old_layout, new_layout) }
+		unsafe { self.0.grow_zeroed(ptr, old_layout, new_layout) }
 	}
 
 	unsafe fn shrink(
@@ -102,7 +100,7 @@ where
 		new_layout: Layout,
 	) -> Result<NonNull<[u8]>, AllocError> {
 		// SAFETY: Upheld by the caller.
-		unsafe { self.inner.shrink(ptr, old_layout, new_layout) }
+		unsafe { self.0.shrink(ptr, old_layout, new_layout) }
 	}
 
 	fn by_ref(&self) -> &Self
@@ -123,7 +121,7 @@ where
 
 		// SAFETY: `size` and `align` are valid.
 		unsafe {
-			self.inner
+			self.0
 				.allocate_blocks(size, align)
 				.map(|p| p.as_ptr().cast())
 				.unwrap_or(ptr::null_mut())
@@ -143,9 +141,9 @@ where
 	}
 
 	unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-		// SAFETY: upheld by the caller.
+		// SAFETY: Upheld by the caller.
 		unsafe {
-			self.inner
+			self.0
 				.deallocate_blocks(NonNull::new_unchecked(ptr), layout.size() * B);
 		}
 	}
@@ -156,40 +154,37 @@ where
 			assert_unchecked(new_size > 0);
 		}
 
-		// SAFETY: upheld by the caller.
-		let ptr: NonNull<u8> = unsafe { NonNull::new_unchecked(ptr) };
 		let old_size = old_layout.size() / B;
 		let new_size = new_size.div_ceil(B);
 
-		if new_size > old_size {
-			// SAFETY: upheld by the caller.
-			return unsafe {
-				if self.grow_in_place(ptr, old_size, new_size).is_ok() {
-					ptr.as_ptr()
-				} else {
-					// Otherwise just reallocate and copy.
-					// SAFETY: We have made sure that `new_size > 0` and that `align` is valid.
-					let Ok(new) = self.allocate_blocks(new_size, old_layout.align()) else {
-						return ptr::null_mut();
-					};
+		unsafe {
+			// SAFETY: Upheld by the caller.
+			let ptr: NonNull<u8> = NonNull::new_unchecked(ptr);
 
-					// SAFETY: We are copying all the necessary bytes from `ptr` into `new`.
-					// `ptr` and `new` both point to an allocation of at least `old_layout.size()` bytes.
-					ptr::copy_nonoverlapping(ptr.as_ptr(), new.as_ptr(), old_layout.size());
+			// SAFETY: Upheld by the caller.
+			if new_size > old_size && self.grow_in_place(ptr, old_size, new_size).is_ok() {
+				return ptr.as_ptr();
+			} else if new_size > old_size {
+				// Reallocate and copy.
+				// SAFETY: We have made sure that `new_size > 0` and that `align` is valid.
+				let Ok(new) = self.allocate_blocks(new_size, old_layout.align()) else {
+					return ptr::null_mut();
+				};
 
-					// SAFETY: The caller upholds that old_size > 0.
-					self.deallocate_blocks(ptr, old_size);
+				// SAFETY: We are copying all the necessary bytes from `ptr` into `new`.
+				// `ptr` and `new` both point to an allocation of at least `old_layout.size()` bytes.
+				ptr::copy_nonoverlapping(ptr.as_ptr(), new.as_ptr(), old_layout.size());
 
-					new.as_ptr()
-				}
-			};
-		} else if old_size > new_size {
-			// SAFETY: upheld by the caller.
-			unsafe {
-				self.inner.shrink_in_place(ptr, old_size, new_size);
+				// SAFETY: The caller upholds that old_size > 0.
+				self.deallocate_blocks(ptr, old_size);
+
+				return new.as_ptr();
+			} else if old_size > new_size {
+				// SAFETY: Upheld by the caller.
+				self.0.shrink_in_place(ptr, old_size, new_size);
 			}
-		}
 
-		ptr.as_ptr()
+			ptr.as_ptr()
+		}
 	}
 }

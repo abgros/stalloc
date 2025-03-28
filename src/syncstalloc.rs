@@ -5,27 +5,24 @@ extern crate std;
 use std::sync::{Mutex, MutexGuard};
 
 use crate::UnsafeStalloc;
-use crate::align::*;
+use crate::align::{Align, Alignment};
 
 /// A wrapper around `UnsafeStalloc` that is safe to create because it prevents data races using a Mutex.
 /// In comparison to `UnsafeStalloc`, the Mutex may cause a slight overhead.
-pub struct SyncStalloc<const L: usize, const B: usize>
+#[repr(transparent)]
+pub struct SyncStalloc<const L: usize, const B: usize>(Mutex<UnsafeStalloc<L, B>>)
 where
-	Align<B>: Alignment,
-{
-	inner: Mutex<UnsafeStalloc<L, B>>,
-}
+	Align<B>: Alignment;
 
 impl<const L: usize, const B: usize> SyncStalloc<L, B>
 where
 	Align<B>: Alignment,
 {
 	/// Initializes a new empty `SyncStalloc` instance.
+	#[must_use]
 	pub const fn new() -> Self {
-		Self {
-			// SAFETY: The Mutex prevents concurrent access to the `UnsafeStalloc`.
-			inner: Mutex::new(unsafe { UnsafeStalloc::<L, B>::new() }),
-		}
+		// SAFETY: The Mutex prevents concurrent access to the `UnsafeStalloc`.
+		Self(Mutex::new(unsafe { UnsafeStalloc::<L, B>::new() }))
 	}
 
 	/// Checks if the allocator is completely out of memory.
@@ -60,6 +57,10 @@ where
 	/// # Safety
 	///
 	/// `size` must be nonzero, and `align` must be a power of 2 in the range `1..=2^29 / B`.
+	///
+	/// # Errors
+	///
+	/// Will return `AllocError` if the allocation was unsuccessful, in which case this function was a no-op.
 	pub unsafe fn allocate_blocks(
 		&self,
 		size: usize,
@@ -89,7 +90,7 @@ where
 		// SAFETY: Upheld by the caller.
 		unsafe {
 			self.acquire_locked()
-				.shrink_in_place(ptr, old_size, new_size)
+				.shrink_in_place(ptr, old_size, new_size);
 		}
 	}
 
@@ -98,6 +99,10 @@ where
 	/// # Safety
 	///
 	/// `ptr` must point to a valid allocation of `old_size` blocks. Also, `new_size > old_size`.
+	///
+	/// # Errors
+	///
+	/// Will return `AllocError` if the grow was unsuccessful, in which case this function was a no-op.
 	pub unsafe fn grow_in_place(
 		&self,
 		ptr: NonNull<u8>,
@@ -108,10 +113,21 @@ where
 		unsafe { self.acquire_locked().grow_in_place(ptr, old_size, new_size) }
 	}
 
+	/// Tries to grow the current allocation in-place. If that isn't possible, the allocator grows by as much
+	/// as it is able to, and the new length of the allocation is returned. The new length is guaranteed to be
+	/// in the range `old_size..=new_size`.
+	/// # Safety
+	///
+	/// `ptr` must point to a valid allocation of `old_size` blocks. Also, `new_size > old_size`.
+	pub unsafe fn grow_up_to(&self, ptr: NonNull<u8>, old_size: usize, new_size: usize) -> usize {
+		// SAFETY: Upheld by the caller.
+		unsafe { self.acquire_locked().grow_up_to(ptr, old_size, new_size) }
+	}
+
 	fn acquire_locked(&self) -> MutexGuard<UnsafeStalloc<L, B>> {
 		// Note: if this Mutex is poisoned, it means that one of the allocation functions panicked,
 		// which is already declared to be UB. Therefore, we can assume that this is never poisoned.
-		unsafe { self.inner.lock().unwrap_unchecked() }
+		unsafe { self.0.lock().unwrap_unchecked() }
 	}
 }
 
@@ -138,22 +154,22 @@ where
 	Align<B>: Alignment,
 {
 	unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-		// SAFETY: upheld by the caller.
+		// SAFETY: Upheld by the caller.
 		unsafe { self.acquire_locked().alloc(layout) }
 	}
 
 	unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-		// SAFETY: upheld by the caller.
+		// SAFETY: Upheld by the caller.
 		unsafe { self.acquire_locked().alloc_zeroed(layout) }
 	}
 
 	unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-		// SAFETY: upheld by the caller.
+		// SAFETY: Upheld by the caller.
 		unsafe { self.acquire_locked().dealloc(ptr, layout) }
 	}
 
 	unsafe fn realloc(&self, ptr: *mut u8, old_layout: Layout, new_size: usize) -> *mut u8 {
-		// SAFETY: upheld by the caller.
+		// SAFETY: Upheld by the caller.
 		unsafe { self.acquire_locked().realloc(ptr, old_layout, new_size) }
 	}
 }

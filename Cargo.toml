@@ -2,6 +2,9 @@
 name = "stalloc"
 version = "0.2.0"
 edition = "2024"
+repository = "https://github.com/abgros/stalloc"
+description = "Stalloc is a fast first-fit memory allocator that you can use to quickly speed up your Rust programs."
+license = "MIT"
 
 [dependencies]
 

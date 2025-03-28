@@ -1,6 +1,8 @@
 Stalloc (Stack + alloc) is a fast first-fit memory allocator written in Rust. From my benchmarking, it can be over 3x as fast as the default OS allocator! This is because all memory is allocated from the stack, which allows it to avoid all OS overhead.
 
-Note that Stalloc uses a fixed amount of memory. If it ever runs out, it could result in your program crashing immediately.
+Note that Stalloc uses a fixed amount of memory. If it ever runs out, it could result in your program crashing immediately. Stalloc is especially good for programs that make lots of small allocations. Stalloc is also extremely memory-efficient — you can create a "heap" containing less than a dozen bytes!
+
+When you create a Stallocator, you configure it with two numbers: `L` is the number of blocks, and `B` is the size of each block in bytes. The total size of this type comes out to `L * B + 4` bytes, of which `L * B` can be used (4 bytes are needed to hold some metadata).
 
 There are three main ways to use this library:
 
@@ -8,7 +10,7 @@ There are three main ways to use this library:
 ```rs
 #![feature(allocator_api)]
 
-let alloc = Stalloc::<200, 4>::new();
+let alloc = Stalloc::<200, 4>::new(); // 200 blocks, 4 bytes each
 let mut v = Vec::new_in(&alloc);
 v.push(25);
 

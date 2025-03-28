@@ -3,7 +3,6 @@
 #![cfg_attr(feature = "allocator_api", feature(allocator_api))]
 
 //! This crate provides a fast first-fit memory allocator.
-//! More detailed documentation here...
 
 use core::cell::UnsafeCell;
 use core::fmt::{self, Debug, Formatter};

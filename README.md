@@ -1,6 +1,6 @@
-Stalloc (Stack + alloc) is a fast first-fit memory allocator written in Rust. From my benchmarking, it can be over 3x as fast as the default OS allocator! This is because all memory is allocated from the stack, which allows it to avoid all OS overhead.
+Stalloc (Stack + alloc) is a fast first-fit memory allocator. From my benchmarking, it can be over 3x as fast as the default OS allocator! This is because all memory is allocated from the stack, which allows it to avoid all OS overhead. Since it doesn't rely on the OS (aside from `SyncStalloc`), this library is `no_std` compatible.
 
-Note that Stalloc uses a fixed amount of memory. If it ever runs out, it could result in your program crashing immediately. Stalloc is especially good for programs that make lots of small allocations. Stalloc is also extremely memory-efficient — you can create a "heap" containing less than a dozen bytes!
+Note that Stalloc uses a fixed amount of memory. If it ever runs out, it could result in your program crashing immediately. Stalloc is especially good for programs that make lots of small allocations. It's also extremely memory-efficient — you can create a "heap" containing less than a dozen bytes!
 
 When you create a Stallocator, you configure it with two numbers: `L` is the number of blocks, and `B` is the size of each block in bytes. The total size of this type comes out to `L * B + 4` bytes, of which `L * B` can be used (4 bytes are needed to hold some metadata).
 
@@ -40,26 +40,18 @@ unsafe {
 static GLOBAL: SyncStalloc<1000, 4> = SyncStalloc::new();
 
 fn main() {
-	// make some allocations and stuff
+	// allocations and stuff
 	let v = vec![1, 2, 3, 4, 5];
+
+	// we can check the on the allocator state:
+	println!("{GLOBAL:?}");
 }
 ```
 
-If your program is single-threaded, you can avoid a little bit of overhead by using `UnsafeStalloc`.
+If your program is single-threaded, you can avoid a little bit of overhead by using `UnsafeStalloc`, which isn't thread-safe.
 ```rs
 #[global_allocator]
 static GLOBAL: UnsafeStalloc<1000, 4> = unsafe { UnsafeStalloc::new() };
 ```
 
 See the `examples` folder for a full program using Stalloc.
-
-You can quickly try out the library by running:
-```
-git clone https://github.com/abgros/stalloc.git
-cd stalloc
-cargo test
-```
-Then run the examples with:
-```
-cargo run --example "name of the example" --release
-```

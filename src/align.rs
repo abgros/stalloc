@@ -28,7 +28,7 @@ pub struct Align<const N: usize>(<Self as Alignment>::Inner)
 where
 	Self: Alignment;
 
-/// See the documentation for `Align`.
+#[doc(hidden)]
 pub trait Alignment {
 	/// See the documentation for `Align`.
 	type Inner: Copy;
@@ -38,7 +38,7 @@ macro_rules! impl_alignments {
 	($($name:ident as $n:literal),*) => { $(
 		#[derive(Copy, Clone)]
 		#[repr(align($n))]
-		/// See the documentation for `Align`.
+		#[doc(hidden)]
 		pub struct $name;
 		impl Alignment for Align<$n> {
 			type Inner = $name;

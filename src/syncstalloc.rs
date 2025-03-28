@@ -48,7 +48,7 @@ where
 	/// # Safety
 	///
 	/// Calling this function immediately invalidates all pointers into the allocator. Calling
-	/// deallocate() with an invalidated pointer may result in the free list being corrupted.
+	/// `deallocate_blocks()` with an invalidated pointer will result in the free list being corrupted.
 	pub unsafe fn clear(&self) {
 		// SAFETY: Upheld by the caller.
 		unsafe { self.acquire_locked().clear() }
@@ -84,7 +84,7 @@ where
 	///
 	/// # Safety
 	///
-	/// `ptr` must point to a valid allocation of `old_size` blocks. `new_size` must be in `1..old_size`.
+	/// `ptr` must point to a valid allocation of `old_size` blocks, and `new_size` must be in `1..old_size`.
 	pub unsafe fn shrink_in_place(&self, ptr: NonNull<u8>, old_size: usize, new_size: usize) {
 		// SAFETY: Upheld by the caller.
 		unsafe {

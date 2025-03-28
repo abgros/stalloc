@@ -63,6 +63,9 @@ const OOM_MARKER: u16 = u16::MAX;
 /// The alignment of the allocator is always equal to `B`. For maximum efficiency, it is recommended
 /// to set `B` equal to the alignment of the type you expect to store the most of. For example, if you're storing
 /// a lot of `u64`s, you should set `B == 8`.
+///
+/// Note that `Stalloc` cannot be used as a global allocator because it is not thread-safe. To switch out the global
+/// allocator, use `SyncStalloc` or `UnsafeStalloc`, which can be used concurrently.
 pub struct Stalloc<const L: usize, const B: usize>
 where
 	Align<B>: Alignment,
@@ -117,7 +120,7 @@ where
 	/// # Safety
 	///
 	/// Calling this function immediately invalidates all pointers into the allocator. Calling
-	/// deallocate() with an invalidated pointer may result in the free list being corrupted.
+	/// `deallocate_blocks()` with an invalidated pointer will result in the free list being corrupted.
 	pub unsafe fn clear(&self) {
 		unsafe {
 			(*self.base.get()).next = 0;
@@ -256,7 +259,7 @@ where
 	///
 	/// # Safety
 	///
-	/// `ptr` must point to a valid allocation of `old_size` blocks. `new_size` must be in `1..old_size`.
+	/// `ptr` must point to a valid allocation of `old_size` blocks, and `new_size` must be in `1..old_size`.
 	pub unsafe fn shrink_in_place(&self, ptr: NonNull<u8>, old_size: usize, new_size: usize) {
 		// Assert unsafe preconditions.
 		unsafe {

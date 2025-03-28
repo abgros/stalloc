@@ -30,7 +30,7 @@ assert!(alloc.is_oom());
 
 // later...
 unsafe {
-	alloc.deallocate_blocks(ptr, alignment);
+	alloc.deallocate_blocks(ptr, 80);
 }
 ```
 

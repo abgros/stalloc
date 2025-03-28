@@ -1,8 +1,8 @@
-use core::alloc::{AllocError, Allocator, GlobalAlloc, Layout};
+use core::alloc::{GlobalAlloc, Layout};
 use core::fmt::{self, Debug, Formatter};
+use core::hint::assert_unchecked;
 use core::ops::Deref;
 use core::ptr::{self, NonNull};
-use std::hint::assert_unchecked;
 
 use crate::Stalloc;
 use crate::align::*;
@@ -54,6 +54,10 @@ where
 
 unsafe impl<const L: usize, const B: usize> Sync for UnsafeStalloc<L, B> where Align<B>: Alignment {}
 
+#[cfg(feature = "allocator_api")]
+use core::alloc::{AllocError, Allocator};
+
+#[cfg(feature = "allocator_api")]
 unsafe impl<const L: usize, const B: usize> Allocator for UnsafeStalloc<L, B>
 where
 	Align<B>: Alignment,
@@ -76,7 +80,7 @@ where
 		ptr: NonNull<u8>,
 		old_layout: Layout,
 		new_layout: Layout,
-	) -> Result<NonNull<[u8]>, std::alloc::AllocError> {
+	) -> Result<NonNull<[u8]>, AllocError> {
 		// SAFETY: Upheld by the caller.
 		unsafe { self.inner.grow(ptr, old_layout, new_layout) }
 	}
@@ -86,7 +90,7 @@ where
 		ptr: NonNull<u8>,
 		old_layout: Layout,
 		new_layout: Layout,
-	) -> Result<NonNull<[u8]>, std::alloc::AllocError> {
+	) -> Result<NonNull<[u8]>, AllocError> {
 		// SAFETY: Upheld by the caller.
 		unsafe { self.inner.grow_zeroed(ptr, old_layout, new_layout) }
 	}
@@ -96,7 +100,7 @@ where
 		ptr: NonNull<u8>,
 		old_layout: Layout,
 		new_layout: Layout,
-	) -> Result<NonNull<[u8]>, std::alloc::AllocError> {
+	) -> Result<NonNull<[u8]>, AllocError> {
 		// SAFETY: Upheld by the caller.
 		unsafe { self.inner.shrink(ptr, old_layout, new_layout) }
 	}

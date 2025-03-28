@@ -10,7 +10,7 @@ fn main() {
 	let start = Instant::now();
 
 	for _ in 0..5000 {
-		let alloc: SyncStalloc<THREAD_COUNT, 4> = SyncStalloc::new();
+		let alloc = SyncStalloc::<THREAD_COUNT, 4>::new();
 
 		thread::scope(|s| {
 			for _ in 0..THREAD_COUNT {

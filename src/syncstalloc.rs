@@ -1,6 +1,7 @@
-use core::alloc::{AllocError, Allocator, GlobalAlloc, Layout};
+use core::alloc::{GlobalAlloc, Layout};
 use core::fmt::{self, Debug, Formatter};
-use core::ptr::NonNull;
+
+extern crate std;
 use std::sync::{Mutex, MutexGuard};
 
 use crate::UnsafeStalloc;
@@ -19,8 +20,8 @@ impl<const L: usize, const B: usize> SyncStalloc<L, B>
 where
 	Align<B>: Alignment,
 {
+	/// Initializes a new empty `SyncStalloc` instance.
 	pub const fn new() -> Self {
-		assert!(L >= 1 && L <= 0xffff, "block count must be in 1..65536");
 		Self {
 			// SAFETY: The Mutex prevents concurrent access to the `UnsafeStalloc`.
 			inner: Mutex::new(unsafe { UnsafeStalloc::<L, B>::new() }),
@@ -51,6 +52,60 @@ where
 	pub unsafe fn clear(&self) {
 		// SAFETY: Upheld by the caller.
 		unsafe { self.acquire_locked().clear() }
+	}
+
+	/// Tries to allocate `count` blocks. If the allocation succeed, a pointer is returned. This function
+	/// never allocates more than necessary.
+	///
+	/// # Safety
+	///
+	/// `size` must be nonzero, and `align` must be a power of 2 in the range `1..=2^29 / B`.
+	pub unsafe fn allocate_blocks(
+		&self,
+		size: usize,
+		align: usize,
+	) -> Result<NonNull<u8>, AllocError> {
+		// SAFETY: Upheld by the caller.
+		unsafe { self.acquire_locked().allocate_blocks(size, align) }
+	}
+
+	/// Deallocates a pointer.
+	///
+	/// # Safety
+	///
+	/// `ptr` must point to an allocation, and `size` must be the number of blocks
+	/// in the allocation. That is, `size` is always in `1..=L`.
+	pub unsafe fn deallocate_blocks(&self, ptr: NonNull<u8>, size: usize) {
+		// SAFETY: Upheld by the caller.
+		unsafe { self.acquire_locked().deallocate_blocks(ptr, size) }
+	}
+
+	/// Shrinks the allocation. This function always succeeds and never reallocates.
+	///
+	/// # Safety
+	///
+	/// `ptr` must point to a valid allocation of `old_size` blocks. `new_size` must be in `1..old_size`.
+	pub unsafe fn shrink_in_place(&self, ptr: NonNull<u8>, old_size: usize, new_size: usize) {
+		// SAFETY: Upheld by the caller.
+		unsafe {
+			self.acquire_locked()
+				.shrink_in_place(ptr, old_size, new_size)
+		}
+	}
+
+	/// Tries to grow the current allocation in-place. If that isn't possible, this function is a no-op.
+	///
+	/// # Safety
+	///
+	/// `ptr` must point to a valid allocation of `old_size` blocks. Also, `new_size > old_size`.
+	pub unsafe fn grow_in_place(
+		&self,
+		ptr: NonNull<u8>,
+		old_size: usize,
+		new_size: usize,
+	) -> Result<(), AllocError> {
+		// SAFETY: Upheld by the caller.
+		unsafe { self.acquire_locked().grow_in_place(ptr, old_size, new_size) }
 	}
 
 	fn acquire_locked(&self) -> MutexGuard<UnsafeStalloc<L, B>> {
@@ -103,6 +158,13 @@ where
 	}
 }
 
+#[cfg(feature = "allocator_api")]
+use core::{
+	alloc::{AllocError, Allocator},
+	ptr::NonNull,
+};
+
+#[cfg(feature = "allocator_api")]
 unsafe impl<const L: usize, const B: usize> Allocator for SyncStalloc<L, B>
 where
 	Align<B>: Alignment,

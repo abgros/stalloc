@@ -1,17 +1,31 @@
-#![feature(allocator_api)]
+#![no_std]
+#![deny(missing_docs)]
+#![cfg_attr(feature = "allocator_api", feature(allocator_api))]
 
-use core::alloc::{AllocError, Allocator, Layout};
+//! This crate provides a fast first-fit memory allocator.
+//! More detailed documentation here...
+
 use core::cell::UnsafeCell;
 use core::fmt::{self, Debug, Formatter};
 use core::hint::assert_unchecked;
 use core::mem::MaybeUninit;
-use core::ptr::{self, NonNull};
+use core::ptr::NonNull;
+
+#[cfg(feature = "allocator_api")]
+use core::alloc::AllocError;
+#[cfg(not(feature = "allocator_api"))]
+/// An error type representing some kind of allocation error due to memory exhaustion.
+/// This is a polyfill for `core::alloc::AllocError`, available through the nightly Allocator API.
+pub struct AllocError;
 
 mod align;
-use align::*;
+pub use align::*;
 mod unsafestalloc;
 pub use unsafestalloc::*;
+
+#[cfg(feature = "sync_stalloc")]
 mod syncstalloc;
+#[cfg(feature = "sync_stalloc")]
 pub use syncstalloc::*;
 
 #[cfg(test)]
@@ -63,6 +77,7 @@ impl<const L: usize, const B: usize> Stalloc<L, B>
 where
 	Align<B>: Alignment,
 {
+	/// Initializes a new empty `Stalloc` instance.
 	pub const fn new() -> Self {
 		assert!(L >= 1 && L <= 0xffff, "block count must be in 1..65536");
 		assert!(B >= 4, "block size must be at least 4 bytes");
@@ -424,6 +439,13 @@ where
 	}
 }
 
+#[cfg(feature = "allocator_api")]
+use core::{
+	alloc::{Allocator, Layout},
+	ptr,
+};
+
+#[cfg(feature = "allocator_api")]
 unsafe impl<const L: usize, const B: usize> Allocator for Stalloc<L, B>
 where
 	Align<B>: Alignment,

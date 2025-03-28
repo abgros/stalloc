@@ -2,7 +2,7 @@ Stalloc (Stack + alloc) is a fast first-fit memory allocator written in Rust. Fr
 
 Note that Stalloc uses a fixed amount of memory. If it ever runs out, it could result in your program crashing immediately.
 
-There are two main ways to use this library:
+There are three main ways to use this library:
 
 ## With the allocator API
 ```rs
@@ -15,6 +15,21 @@ v.push(25);
 // Since the allocator is about to get dropped anyway, no need to call the destructor of `v`.
 mem::forget(v);
 // `alloc` gets dropped at the end of the scope
+```
+
+## With the unsafe APIs
+```rs
+let alloc = Stalloc::<80, 8>::new();
+
+let alignment = 1; // measured in block size, so 8 bytes
+let ptr = unsafe { alloc.allocate_blocks(80, alignment) }.expect("allocation failed");
+assert!(alloc.is_oom());
+// do stuff with your new allocation
+
+// later...
+unsafe {
+	alloc.deallocate_blocks(ptr, alignment);
+}
 ```
 
 ## As a global allocator
@@ -44,5 +59,5 @@ cargo test
 ```
 Then run the examples with:
 ```
-cargo run --example <name of the example> --release
+cargo run --example "name of the example" --release
 ```

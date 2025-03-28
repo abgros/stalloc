@@ -1,12 +1,36 @@
-// Evil trait magic to define a ZST with a specified alignment, e.g. Align<32>
-
 #[derive(Clone, Copy)]
 #[repr(transparent)]
+/// A ZST with a given alignment. `Align` and `Alignment` are used to ensure that `Block`, and hence
+/// `Stalloc`, are aligned to a particular value. The definition of `Block` is:
+/// ```
+/// #[derive(Clone, Copy)]
+/// union Block<const B: usize>
+/// where
+///     Align<B>: Alignment,
+/// {
+///     header: Header,
+///     bytes: [MaybeUninit<u8>; B],
+///     _align: Align<B>,
+/// }
+/// ```
+/// This struct and trait are made public to allow you to define your own wrapper around `Stalloc`.
+/// For example, `SyncStalloc` is defined as:
+///
+/// ```
+/// pub struct SyncStalloc<const L: usize, const B: usize>
+/// where
+///     Align<B>: Alignment,
+/// {
+///     inner: Mutex<UnsafeStalloc<L, B>>,
+/// }
+/// ```
 pub struct Align<const N: usize>(<Self as Alignment>::Inner)
 where
 	Self: Alignment;
 
+/// See the documentation for `Align`.
 pub trait Alignment {
+	/// See the documentation for `Align`.
 	type Inner: Copy;
 }
 
@@ -14,6 +38,7 @@ macro_rules! impl_alignments {
 	($($name:ident as $n:literal),*) => { $(
 		#[derive(Copy, Clone)]
 		#[repr(align($n))]
+		/// See the documentation for `Align`.
 		pub struct $name;
 		impl Alignment for Align<$n> {
 			type Inner = $name;

@@ -8,6 +8,24 @@
 //! it can be over 3x as fast as the default OS allocator! This is because all memory
 //! is allocated from the stack, which allows it to avoid all OS overhead. Since it
 //! doesn't rely on the OS (aside from `SyncStalloc`), this library is `no_std` compatible.
+//!
+//! ```
+//! use stalloc::SyncStalloc;
+//!
+//! // Create a global allocator with 1000 blocks, each 4 bytes in length.
+//! #[global_allocator]
+//! static GLOBAL: SyncStalloc<1000, 4> = SyncStalloc::new();
+//!
+//! fn main() {
+//!     // All of these allocations are being handled by the global `SyncStalloc` instance.
+//!     let s1 = String::from("Hello");
+//!     let s2 = String::from("world");
+//!     let msg = format!("{s1}, {s2}!");
+//!
+//!     assert!(!GLOBAL.is_oom());
+//!     println!("Allocator state: {GLOBAL:?}");
+//! }
+//! ```
 
 use core::cell::UnsafeCell;
 use core::fmt::{self, Debug, Formatter};
@@ -95,6 +113,13 @@ where
 	Align<B>: Alignment,
 {
 	/// Initializes a new empty `Stalloc` instance.
+	///
+	/// # Examples
+	/// ```
+	/// use stalloc::Stalloc;
+	///
+	/// let alloc = Stalloc::<200, 8>::new();
+	/// ```
 	#[must_use]
 	pub const fn new() -> Self {
 		assert!(L >= 1 && L <= 0xffff, "block count must be in 1..65536");
@@ -120,6 +145,16 @@ where
 	/// If this is false, then you are guaranteed to be able to allocate
 	/// a layout with a size and alignment of `B` bytes.
 	/// This runs in O(1).
+	///
+	/// # Examples
+	/// ```
+	/// use stalloc::Stalloc;
+	///
+	/// let alloc = Stalloc::<200, 8>::new();
+	/// assert!(!alloc.is_oom());
+	/// let ptr = unsafe { alloc.allocate_blocks(200, 1).unwrap() };
+	/// assert!(alloc.is_oom());
+	/// ```
 	pub fn is_oom(&self) -> bool {
 		unsafe { *self.base.get() }.length == OOM_MARKER
 	}
@@ -129,6 +164,20 @@ where
 	/// a layout with a size of `B * L` bytes and an alignment of `B` bytes.
 	/// If this is false, then this is guaranteed to be impossible.
 	/// This runs in O(1).
+	///
+	/// # Examples
+	/// ```
+	/// use stalloc::Stalloc;
+	///
+	/// let alloc = Stalloc::<60, 4>::new();
+	/// assert!(alloc.is_empty());
+	///
+	/// let ptr = unsafe { alloc.allocate_blocks(60, 1).unwrap() };
+	/// assert!(!alloc.is_empty());
+	///
+	/// unsafe { alloc.deallocate_blocks(ptr, 60) };
+	/// assert!(alloc.is_empty());
+	/// ```
 	pub fn is_empty(&self) -> bool {
 		!self.is_oom() && unsafe { *self.base.get() }.next == 0
 	}
@@ -137,6 +186,21 @@ where
 	///
 	/// Calling this function immediately invalidates all pointers into the allocator. Calling
 	/// `deallocate_blocks()` with an invalidated pointer will result in the free list being corrupted.
+	///
+	/// # Examples
+	/// ```
+	/// use stalloc::Stalloc;
+	///
+	/// let alloc = Stalloc::<60, 4>::new();
+	///
+	/// let ptr1 = unsafe { alloc.allocate_blocks(20, 1) }.unwrap();
+	/// let ptr2 = unsafe { alloc.allocate_blocks(20, 1) }.unwrap();
+	/// let ptr3 = unsafe { alloc.allocate_blocks(20, 1) }.unwrap();
+	///
+	/// unsafe { alloc.clear() }; // invalidate all allocated pointers
+	///
+	/// assert!(alloc.is_empty());
+	/// ```
 	pub unsafe fn clear(&self) {
 		unsafe {
 			(*self.base.get()).next = 0;
@@ -156,6 +220,19 @@ where
 	/// # Errors
 	///
 	/// Will return `AllocError` if the allocation was unsuccessful, in which case this function was a no-op.
+	///
+	/// # Examples
+	/// ```
+	/// use stalloc::Stalloc;
+	///
+	/// const BLOCK_SIZE: usize = 4;
+	/// let alloc = Stalloc::<10, BLOCK_SIZE>::new();
+	///
+	/// let ptr = unsafe { alloc.allocate_blocks(10, 1) }.unwrap();
+	/// unsafe { ptr.write_bytes(42, 10 * BLOCK_SIZE) };
+	///
+	/// assert!(alloc.is_oom());
+	/// ```
 	pub unsafe fn allocate_blocks(
 		&self,
 		size: usize,
@@ -232,12 +309,25 @@ where
 		}
 	}
 
-	/// Deallocates a pointer.
+	/// Deallocates a pointer. This function always succeeds.
 	///
 	/// # Safety
 	///
 	/// `ptr` must point to an allocation, and `size` must be the number of blocks
 	/// in the allocation. That is, `size` is always in `1..=L`.
+	///
+	/// # Examples
+	/// ```
+	/// use stalloc::Stalloc;
+	///
+	/// let alloc = Stalloc::<100, 16>::new();
+	///
+	/// let ptr = unsafe { alloc.allocate_blocks(100, 1) }.unwrap();
+	/// assert!(alloc.is_oom());
+	///
+	/// unsafe { alloc.deallocate_blocks(ptr, 100) };
+	/// assert!(alloc.is_empty());
+	/// ```
 	pub unsafe fn deallocate_blocks(&self, ptr: NonNull<u8>, size: usize) {
 		// Assert unsafe precondition.
 		unsafe {
@@ -280,6 +370,20 @@ where
 	/// # Safety
 	///
 	/// `ptr` must point to a valid allocation of `old_size` blocks, and `new_size` must be in `1..old_size`.
+	///
+	/// # Examples
+	/// ```
+	/// use stalloc::Stalloc;
+	///
+	/// let alloc = Stalloc::<100, 16>::new();
+	///
+	/// let ptr = unsafe { alloc.allocate_blocks(100, 1) }.unwrap();
+	/// assert!(alloc.is_oom());
+	///
+	/// // shrink the allocation from 100 to 90 blocks
+	/// unsafe { alloc.shrink_in_place(ptr, 100, 90) };
+	/// assert!(!alloc.is_oom());
+	/// ```
 	pub unsafe fn shrink_in_place(&self, ptr: NonNull<u8>, old_size: usize, new_size: usize) {
 		// Assert unsafe preconditions.
 		unsafe {
@@ -325,6 +429,20 @@ where
 	/// # Errors
 	///
 	/// Will return `AllocError` if the grow was unsuccessful, in which case this function was a no-op.
+	///
+	/// # Examples
+	/// ```
+	/// use stalloc::Stalloc;
+	///
+	/// let alloc = Stalloc::<100, 16>::new();
+	///
+	/// let ptr = unsafe { alloc.allocate_blocks(25, 1) }.unwrap();
+	/// assert!(!alloc.is_oom());
+	///
+	/// // grow the allocation from 25 to 100 blocks
+	/// unsafe { alloc.grow_in_place(ptr, 25, 100) }.unwrap();
+	/// assert!(alloc.is_oom());
+	/// ```
 	pub unsafe fn grow_in_place(
 		&self,
 		ptr: NonNull<u8>,
@@ -389,24 +507,22 @@ where
 	/// # Safety
 	///
 	/// `ptr` must point to a valid allocation of `old_size` blocks. Also, `new_size > old_size`.
+	///
+	/// # Examples
 	/// ```
 	/// use stalloc::Stalloc;
 	///
-	/// let s = Stalloc::<7, 4>::new();
+	/// let alloc1 = Stalloc::<7, 4>::new();
 	/// unsafe {
-	///     let ptr = s.allocate_blocks(3, 1).unwrap(); // allocate 3 blocks
-	///     let new_size = s.grow_up_to(ptr, 3, 9999); // try to grow to a ridiculous amount
+	///     let ptr = alloc1.allocate_blocks(3, 1).unwrap(); // allocate 3 blocks
+	///     let new_size = alloc1.grow_up_to(ptr, 3, 9999); // try to grow to a ridiculous amount
 	///     assert_eq!(new_size, 7); // can only grow up to 7
 	/// }
-	/// ```
 	///
-	/// ```
-	/// use stalloc::Stalloc;
-	///
-	/// let s = Stalloc::<21, 16>::new();
+	/// let alloc2 = Stalloc::<21, 16>::new();
 	/// unsafe {
-	///     let ptr = s.allocate_blocks(9, 1).unwrap(); // allocate 9 blocks
-	///     let new_size = s.grow_up_to(ptr, 9, 21);
+	///     let ptr = alloc2.allocate_blocks(9, 1).unwrap(); // allocate 9 blocks
+	///     let new_size = alloc2.grow_up_to(ptr, 9, 21);
 	///     assert_eq!(new_size, 21); // grow was successful
 	/// }
 	/// ```

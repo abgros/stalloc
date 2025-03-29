@@ -21,7 +21,7 @@ fn main() {
 		msg = black_box(msg);
 
 		unsafe {
-			s.deallocate_blocks(NonNull::new_unchecked(msg.as_mut_ptr()), msg.capacity());
+			s.deallocate_blocks(NonNull::new_unchecked(msg.as_mut_ptr()), 50);
 		}
 
 		// If we let `msg` drop itself, it will call `dealloc()` on the global allocator (not `s`),

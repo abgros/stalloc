@@ -19,6 +19,13 @@ where
 	Align<B>: Alignment,
 {
 	/// Initializes a new empty `SyncStalloc` instance.
+	///
+	/// # Examples
+	/// ```
+	/// use stalloc::SyncStalloc;
+	///
+	/// let alloc = SyncStalloc::<200, 8>::new();
+	/// ```
 	#[must_use]
 	pub const fn new() -> Self {
 		// SAFETY: The Mutex prevents concurrent access to the `UnsafeStalloc`.
@@ -124,8 +131,26 @@ where
 		unsafe { self.acquire_locked().grow_up_to(ptr, old_size, new_size) }
 	}
 
-	fn acquire_locked(&self) -> MutexGuard<UnsafeStalloc<L, B>> {
-		// Note: if this Mutex is poisoned, it means that one of the allocation functions panicked,
+	/// Acquires an exclusive lock for the allocator. This can be used to chain multiple
+	/// operations on the allocator without having to repeatedly acquire locks for each one.
+	///
+	/// # Example
+	/// ```
+	/// use stalloc::SyncStalloc;
+	///
+	/// let alloc = SyncStalloc::<100, 4>::new();
+	///
+	/// let lock = alloc.acquire_locked();
+	/// for _ in 0..20 {
+	///     // make multiple allocations in a row
+	///     unsafe { lock.allocate_blocks(5, 1) }.unwrap();
+	/// }
+	/// drop(lock); // until we drop the lock, all accesses to `alloc` will block
+	///
+	/// assert!(alloc.is_oom());
+	/// ```
+	pub fn acquire_locked(&self) -> MutexGuard<UnsafeStalloc<L, B>> {
+		// Note: if this Mutex is poisoned, it means that one of the allocator functions panicked,
 		// which is already declared to be UB. Therefore, we can assume that this is never poisoned.
 		unsafe { self.0.lock().unwrap_unchecked() }
 	}

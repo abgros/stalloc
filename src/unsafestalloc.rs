@@ -44,6 +44,13 @@ where
 	///
 	/// `UnsafeStalloc` does not prevent data races. It is strongly recommend
 	/// to only use it in a single-threaded environment.
+	///
+	/// # Examples
+	/// ```
+	/// use stalloc::UnsafeStalloc;
+	///
+	/// let alloc = unsafe { UnsafeStalloc::<200, 8>::new() };
+	/// ```
 	#[must_use]
 	pub const unsafe fn new() -> Self {
 		Self(Stalloc::<L, B>::new())
@@ -66,7 +73,9 @@ where
 
 	unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
 		// SAFETY: Upheld by the caller.
-		unsafe { self.0.deallocate(ptr, layout) }
+		unsafe {
+			self.0.deallocate(ptr, layout);
+		}
 	}
 
 	fn allocate_zeroed(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
@@ -121,8 +130,7 @@ where
 
 		// SAFETY: `size` and `align` are valid.
 		unsafe {
-			self.0
-				.allocate_blocks(size, align)
+			self.allocate_blocks(size, align)
 				.map(|p| p.as_ptr().cast())
 				.unwrap_or(ptr::null_mut())
 		}
@@ -141,10 +149,11 @@ where
 	}
 
 	unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+		let size = layout.size().div_ceil(B);
+
 		// SAFETY: Upheld by the caller.
 		unsafe {
-			self.0
-				.deallocate_blocks(NonNull::new_unchecked(ptr), layout.size() * B);
+			self.deallocate_blocks(NonNull::new_unchecked(ptr), size);
 		}
 	}
 
@@ -181,7 +190,7 @@ where
 				return new.as_ptr();
 			} else if old_size > new_size {
 				// SAFETY: Upheld by the caller.
-				self.0.shrink_in_place(ptr, old_size, new_size);
+				self.shrink_in_place(ptr, old_size, new_size);
 			}
 
 			ptr.as_ptr()

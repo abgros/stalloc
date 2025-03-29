@@ -1,7 +1,6 @@
 /// A ZST with a given alignment. `Align` and `Alignment` are used to ensure that `Block`, and hence
 /// `Stalloc`, are aligned to a particular value. The definition of `Block` is:
-/// ```ignore
-/// #[derive(Clone, Copy)]
+/// ```rs
 /// union Block<const B: usize>
 /// where
 ///     Align<B>: Alignment,
@@ -14,13 +13,11 @@
 /// This struct and trait are made public to allow you to define your own wrapper around `Stalloc`.
 /// For example, `SyncStalloc` is defined as:
 ///
-/// ```ignore
-/// pub struct SyncStalloc<const L: usize, const B: usize>
+/// ```rs
+/// #[repr(transparent)]
+/// pub struct SyncStalloc<const L: usize, const B: usize>(Mutex<UnsafeStalloc<L, B>>)
 /// where
-///     Align<B>: Alignment,
-/// {
-///     inner: Mutex<UnsafeStalloc<L, B>>,
-/// }
+///     Align<B>: Alignment;
 /// ```
 #[derive(Clone, Copy)]
 #[repr(transparent)]

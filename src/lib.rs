@@ -1,6 +1,6 @@
 #![no_std]
 #![deny(missing_docs)]
-#![cfg_attr(feature = "allocator_api", feature(allocator_api))]
+#![cfg_attr(feature = "allocator-api", feature(allocator_api))]
 #![warn(clippy::nursery, clippy::pedantic)]
 #![allow(clippy::cast_possible_truncation)]
 
@@ -33,9 +33,9 @@ use core::hint::assert_unchecked;
 use core::mem::MaybeUninit;
 use core::ptr::NonNull;
 
-#[cfg(feature = "allocator_api")]
+#[cfg(feature = "allocator-api")]
 use core::alloc::AllocError;
-#[cfg(not(feature = "allocator_api"))]
+#[cfg(not(feature = "allocator-api"))]
 /// An error type representing some kind of allocation error due to memory exhaustion.
 /// This is a polyfill for `core::alloc::AllocError`, available through the nightly Allocator API.
 pub struct AllocError;
@@ -45,12 +45,13 @@ pub use align::*;
 mod unsafestalloc;
 pub use unsafestalloc::*;
 
-#[cfg(feature = "sync_stalloc")]
+#[cfg(feature = "std")]
 mod syncstalloc;
-#[cfg(feature = "sync_stalloc")]
+#[cfg(feature = "std")]
 pub use syncstalloc::*;
 
 #[cfg(test)]
+#[cfg(feature = "allocator-api")]
 mod tests;
 
 #[derive(Clone, Copy)]
@@ -664,13 +665,13 @@ where
 	}
 }
 
-#[cfg(feature = "allocator_api")]
+#[cfg(feature = "allocator-api")]
 use core::{
 	alloc::{Allocator, Layout},
 	ptr,
 };
 
-#[cfg(feature = "allocator_api")]
+#[cfg(feature = "allocator-api")]
 unsafe impl<const L: usize, const B: usize> Allocator for Stalloc<L, B>
 where
 	Align<B>: Alignment,

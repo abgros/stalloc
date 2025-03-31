@@ -2,8 +2,10 @@ use core::alloc::{GlobalAlloc, Layout};
 use core::fmt::{self, Debug, Formatter};
 
 extern crate std;
+use core::ptr::NonNull;
 use std::sync::{Mutex, MutexGuard};
 
+use crate::AllocError;
 use crate::UnsafeStalloc;
 use crate::align::{Align, Alignment};
 
@@ -199,13 +201,10 @@ where
 	}
 }
 
-#[cfg(feature = "allocator_api")]
-use core::{
-	alloc::{AllocError, Allocator},
-	ptr::NonNull,
-};
+#[cfg(feature = "allocator-api")]
+use core::alloc::Allocator;
 
-#[cfg(feature = "allocator_api")]
+#[cfg(feature = "allocator-api")]
 unsafe impl<const L: usize, const B: usize> Allocator for SyncStalloc<L, B>
 where
 	Align<B>: Alignment,

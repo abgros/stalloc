@@ -1,6 +1,6 @@
 [package]
 name = "stalloc"
-version = "0.4.1"
+version = "0.4.2"
 edition = "2024"
 repository = "https://github.com/abgros/stalloc"
 description = "Stalloc is a fast first-fit memory allocator that you can use to quickly speed up your Rust programs."
@@ -9,6 +9,21 @@ license = "MIT"
 [dependencies]
 
 [features]
-default = ["sync_stalloc", "allocator_api"]
-allocator_api = []
-sync_stalloc = []
+default = ["std"]
+allocator-api = []
+std = []
+
+[[example]]
+name = "fast_vectors"
+
+[[example]]
+name = "local_alloc"
+required-features = ["allocator-api"]
+
+[[example]]
+name = "local_string"
+required-features = ["allocator-api"]
+
+[[example]]
+name = "threaded"
+required-features = ["allocator-api", "std"]

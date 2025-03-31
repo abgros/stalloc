@@ -59,10 +59,10 @@ where
 
 unsafe impl<const L: usize, const B: usize> Sync for UnsafeStalloc<L, B> where Align<B>: Alignment {}
 
-#[cfg(feature = "allocator_api")]
+#[cfg(feature = "allocator-api")]
 use core::alloc::{AllocError, Allocator};
 
-#[cfg(feature = "allocator_api")]
+#[cfg(feature = "allocator-api")]
 unsafe impl<const L: usize, const B: usize> Allocator for UnsafeStalloc<L, B>
 where
 	Align<B>: Alignment,

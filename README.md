@@ -60,3 +60,14 @@ When you create a Stallocator, you configure it with two numbers: `L` is the num
 #[repr(align(16))] // aligned to 16 bytes
 struct MoreAlignedStalloc(Stalloc<8, 4>); // eight blocks of four bytes each
 ```
+
+To use this library with no-std, add the following to your `Cargo.toml`:
+```
+[dependencies]
+stalloc = {version = <latest>, default-features = false}
+```
+To use this library with the allocator API, add the following instead:
+```
+[dependencies]
+stalloc = {version = <latest>, features = ["allocator-api"]}
+```

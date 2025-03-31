@@ -210,8 +210,8 @@ where
 		}
 	}
 
-	/// Tries to allocate `count` blocks. If the allocation succeed, a pointer is returned. This function
-	/// never allocates more than necessary.
+	/// Tries to allocate `count` blocks. If the allocation succeeds, a pointer is returned. This function
+	/// never allocates more than necessary. Note that `align` is measured in units of `B`.
 	///
 	/// # Safety
 	///
@@ -688,7 +688,18 @@ where
 
 		// SAFETY: We have made sure that `size` and `align` are valid.
 		unsafe { self.allocate_blocks(size, align) }
-			.map(|p| NonNull::slice_from_raw_parts(p, layout.size()))
+			.map(|p| NonNull::slice_from_raw_parts(p, size * B))
+	}
+
+	fn allocate_zeroed(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
+		let ptr = self.allocate(layout)?;
+
+		// We intentionally shorten the length of the allocated pointer and hence write fewer zeros.
+		let ptr = NonNull::slice_from_raw_parts(ptr.cast(), layout.size());
+
+		// SAFETY: We are filling in the entire allocated range with zeros.
+		unsafe { ptr.cast::<u8>().write_bytes(0, ptr.len()) }
+		Ok(ptr)
 	}
 
 	unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
@@ -708,13 +719,13 @@ where
 		old_layout: Layout,
 		new_layout: Layout,
 	) -> Result<NonNull<[u8]>, AllocError> {
-		let old_size = old_layout.size() / B;
+		let old_size = old_layout.size().div_ceil(B);
 		let new_size = new_layout.size().div_ceil(B);
 		let align = new_layout.align().div_ceil(B);
 
 		// If the size hasn't changed, do nothing.
 		if new_size == old_size {
-			return Ok(NonNull::slice_from_raw_parts(ptr, new_layout.size()));
+			return Ok(NonNull::slice_from_raw_parts(ptr, new_size * B));
 		}
 
 		// If the old size was 0, the pointer was dangling, so just allocate.
@@ -723,7 +734,7 @@ where
 			// that `new_size != old_size`, and we know that `align` has a valid value.
 			return unsafe {
 				self.allocate_blocks(new_size, align)
-					.map(|p| NonNull::slice_from_raw_parts(p, new_layout.size()))
+					.map(|p| NonNull::slice_from_raw_parts(p, new_size * B))
 			};
 		}
 
@@ -757,13 +768,15 @@ where
 		old_layout: Layout,
 		new_layout: Layout,
 	) -> Result<NonNull<[u8]>, AllocError> {
-		let old_size = old_layout.size() / B;
-		let new_size = new_layout.size().div_ceil(B);
-
 		unsafe {
+			// SAFETY: Upheld by the caller.
 			let new_ptr = self.grow(ptr, old_layout, new_layout)?;
-			let count = (new_size - old_size) * B;
-			ptr.as_ptr().add(old_layout.size()).write_bytes(0, count);
+			let count = new_ptr.len() - old_layout.size();
+			// SAFETY: We are filling in the extra capacity with zeros.
+			new_ptr
+				.cast::<u8>()
+				.add(old_layout.size())
+				.write_bytes(0, count);
 			Ok(new_ptr)
 		}
 	}
@@ -805,18 +818,18 @@ where
 
 				// SAFETY: We are copying all the necessary bytes from `ptr` into `new`.
 				// `ptr` and `new` both point to an allocation of at least `old_layout.size()` bytes.
-				ptr::copy_nonoverlapping(ptr.as_ptr(), new.as_ptr().cast(), old_layout.size());
+				ptr::copy_nonoverlapping(ptr.as_ptr(), new.as_ptr(), old_layout.size());
 
 				// SAFETY: We already made sure that old_size > 0.
 				self.deallocate_blocks(ptr, old_size);
 
-				return Ok(NonNull::slice_from_raw_parts(new, new_size));
+				return Ok(NonNull::slice_from_raw_parts(new, new_size * B));
 			}
 		}
 
 		// Check if the size hasn't changed.
 		if old_size == new_size {
-			return Ok(NonNull::slice_from_raw_parts(ptr, old_size));
+			return Ok(NonNull::slice_from_raw_parts(ptr, old_size * B));
 		}
 
 		// SAFETY: We just made sure that new_size > 0 and old_size > new_size,
@@ -825,6 +838,6 @@ where
 			self.shrink_in_place(ptr, old_size, new_size);
 		}
 
-		Ok(NonNull::slice_from_raw_parts(ptr, new_size))
+		Ok(NonNull::slice_from_raw_parts(ptr, new_size * B))
 	}
 }

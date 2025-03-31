@@ -425,3 +425,14 @@ fn test_zeroed() {
 
 	assert!(alloc.is_oom());
 }
+
+#[test]
+fn test_vec_capacity() {
+	let alloc = Stalloc::<1, 1024>::new();
+
+	let mut v: Vec<u8, _> = Vec::with_capacity_in(1, &alloc);
+
+	for i in 0..1024u32 {
+		v.push(i as u8);
+	}
+}

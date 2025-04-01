@@ -4,8 +4,8 @@ use core::hint::assert_unchecked;
 use core::ops::Deref;
 use core::ptr::{self, NonNull};
 
-use crate::Stalloc;
 use crate::align::{Align, Alignment};
+use crate::{AllocChain, ChainableAlloc, Stalloc};
 
 /// A wrapper around `Stalloc` that implements `Sync` and `GlobalAlloc`.
 ///
@@ -195,5 +195,27 @@ where
 
 			ptr.as_ptr()
 		}
+	}
+}
+
+unsafe impl<const L: usize, const B: usize> ChainableAlloc for UnsafeStalloc<L, B>
+where
+	Align<B>: Alignment,
+{
+	fn addr_in_bounds(&self, addr: usize) -> bool {
+		self.0.addr_in_bounds(addr)
+	}
+}
+
+impl<const L: usize, const B: usize> UnsafeStalloc<L, B>
+where
+	Align<B>: Alignment,
+{
+	/// Creates a new `AllocChain` containing this allocator and `next`.
+	pub const fn chain<T>(self, next: &T) -> AllocChain<'_, Self, T>
+	where
+		Self: Sized,
+	{
+		AllocChain::new(self, next)
 	}
 }

@@ -15,13 +15,17 @@ fn main() {
 		thread::scope(|s| {
 			for _ in 0..THREAD_COUNT {
 				s.spawn(|| {
-					for _ in 0..1000 {
-						black_box(Box::new_in(3, &alloc));
+					let mut total = 0;
+					for i in 0..1000 {
+						// Reuse the same lock for creating and dropping the Box
+						let lock = alloc.acquire_locked();
+						total += *black_box(Box::new_in(i, &*lock));
 					}
+					assert_eq!(total, 499500); // ensure no data races have occurred
 				});
 			}
 		});
 	}
 
-	println!("{}", start.elapsed().as_millis());
+	println!("Elapsed: {}ms", start.elapsed().as_millis());
 }

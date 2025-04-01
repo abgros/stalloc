@@ -54,6 +54,13 @@ If your program is single-threaded, you can avoid a little bit of overhead by us
 static GLOBAL: UnsafeStalloc<1000, 4> = unsafe { UnsafeStalloc::new() };
 ```
 
+To avoid the risk of OOM, you can create an allocator chain, which uses the next one as a fallback if something has gone wrong:
+```rs
+// Create an allocator chain, where we try to use the fast `SyncStalloc`, but fall back to `System`.
+#[global_allocator]
+static GLOBAL: AllocChain<SyncStalloc<1000, 8>, System> = SyncStalloc::new().chain(&System);
+```
+
 When you create a Stallocator, you configure it with two numbers: `L` is the number of blocks, and `B` is the size of each block in bytes. The total size of this type comes out to `L * B + 4` bytes, of which `L * B` can be used (4 bytes are needed to hold some metadata). The buffer is automatically aligned to `B`. If you want it to be more aligned than that, you can create a wrapper like this:
 
 ```rs

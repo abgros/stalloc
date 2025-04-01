@@ -436,3 +436,9 @@ fn test_vec_capacity() {
 		v.push(i as u8);
 	}
 }
+
+#[test]
+fn test34() {
+	let _a = Stalloc::<34, 4>::new();
+	let _b = crate::SyncStalloc::<34, 4>::new();
+}

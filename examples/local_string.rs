@@ -29,5 +29,5 @@ fn main() {
 		mem::forget(msg);
 	}
 
-	println!("{}", start.elapsed().as_millis());
+	println!("Elapsed: {}ms", start.elapsed().as_millis());
 }

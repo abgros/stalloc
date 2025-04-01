@@ -1,20 +1,44 @@
 use core::alloc::{GlobalAlloc, Layout};
 use core::fmt::{self, Debug, Formatter};
+use core::ops::Deref;
+use core::ptr::NonNull;
 
 extern crate std;
-use core::ptr::NonNull;
 use std::sync::{Mutex, MutexGuard};
 
-use crate::AllocError;
-use crate::UnsafeStalloc;
 use crate::align::{Align, Alignment};
+use crate::{AllocChain, UnsafeStalloc};
+use crate::{AllocError, ChainableAlloc};
 
 /// A wrapper around `UnsafeStalloc` that is safe to create because it prevents data races using a Mutex.
 /// In comparison to `UnsafeStalloc`, the Mutex may cause a slight overhead.
-#[repr(transparent)]
-pub struct SyncStalloc<const L: usize, const B: usize>(Mutex<UnsafeStalloc<L, B>>)
+#[repr(C)]
+pub struct SyncStalloc<const L: usize, const B: usize>(Mutex<()>, UnsafeStalloc<L, B>)
 where
 	Align<B>: Alignment;
+
+/// A lock around `SyncStalloc`. Creating this type serves as proof that the user holds an exclusive
+/// lock on the inner `SyncStalloc`. When this falls out of scope, the `Stalloc` is unlocked.
+///
+/// This is effectively a reimplementation of `std::sync::MutexGuard`.
+pub struct StallocGuard<'a, const L: usize, const B: usize>
+where
+	Align<B>: Alignment,
+{
+	_guard: MutexGuard<'a, ()>,
+	inner: &'a UnsafeStalloc<L, B>,
+}
+
+impl<const L: usize, const B: usize> Deref for StallocGuard<'_, L, B>
+where
+	Align<B>: Alignment,
+{
+	type Target = UnsafeStalloc<L, B>;
+
+	fn deref(&self) -> &Self::Target {
+		self.inner
+	}
+}
 
 impl<const L: usize, const B: usize> SyncStalloc<L, B>
 where
@@ -30,8 +54,9 @@ where
 	/// ```
 	#[must_use]
 	pub const fn new() -> Self {
-		// SAFETY: The Mutex prevents concurrent access to the `UnsafeStalloc`.
-		Self(Mutex::new(unsafe { UnsafeStalloc::<L, B>::new() }))
+		// SAFETY: The `UnsafeStalloc` can only be accessed through `acquire_locked()`,
+		// which guarantees that the mutex is locked before proceeding.
+		Self(Mutex::new(()), unsafe { UnsafeStalloc::<L, B>::new() })
 	}
 
 	/// Checks if the allocator is completely out of memory.
@@ -151,10 +176,13 @@ where
 	///
 	/// assert!(alloc.is_oom());
 	/// ```
-	pub fn acquire_locked(&self) -> MutexGuard<UnsafeStalloc<L, B>> {
-		// Note: if this Mutex is poisoned, it means that one of the allocator functions panicked,
+	pub fn acquire_locked(&self) -> StallocGuard<L, B> {
+		// SAFETY: if this Mutex is poisoned, it means that one of the allocator functions panicked,
 		// which is already declared to be UB. Therefore, we can assume that this is never poisoned.
-		unsafe { self.0.lock().unwrap_unchecked() }
+		StallocGuard {
+			_guard: unsafe { self.0.lock().unwrap_unchecked() },
+			inner: &self.1,
+		}
 	}
 }
 
@@ -172,7 +200,7 @@ where
 	Align<B>: Alignment,
 {
 	fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-		write!(f, "{:?}", self.acquire_locked())
+		write!(f, "{:?}", self.acquire_locked().inner)
 	}
 }
 
@@ -262,5 +290,27 @@ where
 		Self: Sized,
 	{
 		self
+	}
+}
+
+unsafe impl<const L: usize, const B: usize> ChainableAlloc for SyncStalloc<L, B>
+where
+	Align<B>: Alignment,
+{
+	fn addr_in_bounds(&self, addr: usize) -> bool {
+		self.1.addr_in_bounds(addr)
+	}
+}
+
+impl<const L: usize, const B: usize> SyncStalloc<L, B>
+where
+	Align<B>: Alignment,
+{
+	/// Creates a new `AllocChain` containing this allocator and `next`.
+	pub const fn chain<T>(self, next: &T) -> AllocChain<'_, Self, T>
+	where
+		Self: Sized,
+	{
+		AllocChain::new(self, next)
 	}
 }

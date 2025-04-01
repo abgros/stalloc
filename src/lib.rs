@@ -26,6 +26,15 @@
 //!     println!("Allocator state: {GLOBAL:?}");
 //! }
 //! ```
+//!
+//! To avoid the risk of OOM, you can "chain" your allocator to the system allocator, using it as a fallback.
+//! ```
+//! use stalloc::{AllocChain, SyncStalloc};
+//! use std::alloc::System;
+//!
+//! #[global_allocator]
+//! static GLOBAL: AllocChain<SyncStalloc<1000, 8>, System> = SyncStalloc::new().chain(&System);
+//! ```
 
 use core::cell::UnsafeCell;
 use core::fmt::{self, Debug, Formatter};
@@ -44,6 +53,8 @@ mod align;
 pub use align::*;
 mod unsafestalloc;
 pub use unsafestalloc::*;
+mod chain;
+pub use chain::*;
 
 #[cfg(feature = "std")]
 mod syncstalloc;
@@ -773,11 +784,13 @@ where
 			// SAFETY: Upheld by the caller.
 			let new_ptr = self.grow(ptr, old_layout, new_layout)?;
 			let count = new_ptr.len() - old_layout.size();
+
 			// SAFETY: We are filling in the extra capacity with zeros.
 			new_ptr
 				.cast::<u8>()
 				.add(old_layout.size())
 				.write_bytes(0, count);
+
 			Ok(new_ptr)
 		}
 	}
@@ -840,5 +853,27 @@ where
 		}
 
 		Ok(NonNull::slice_from_raw_parts(ptr, new_size * B))
+	}
+}
+
+unsafe impl<const L: usize, const B: usize> ChainableAlloc for Stalloc<L, B>
+where
+	Align<B>: Alignment,
+{
+	fn addr_in_bounds(&self, addr: usize) -> bool {
+		addr >= self.data.get().addr() && addr < self.data.get().addr() + B * L
+	}
+}
+
+impl<const L: usize, const B: usize> Stalloc<L, B>
+where
+	Align<B>: Alignment,
+{
+	/// Creates a new `AllocChain` containing this allocator and `next`.
+	pub const fn chain<T>(self, next: &T) -> AllocChain<'_, Self, T>
+	where
+		Self: Sized,
+	{
+		AllocChain::new(self, next)
 	}
 }

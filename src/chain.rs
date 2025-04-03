@@ -1,5 +1,7 @@
 use core::alloc::{GlobalAlloc, Layout};
 
+/// A trait representing an allocator that another allocator can be chained to.
+///
 /// # Safety
 /// `addr_in_bounds` must return true if and only if the address could belong to
 /// a pointer which is valid for the allocator. This trait is used to decide
@@ -11,7 +13,7 @@ pub unsafe trait ChainableAlloc {
 	fn addr_in_bounds(&self, addr: usize) -> bool;
 }
 
-/// A chain of allocators. If the first allocator in the chain fails, the second one is tried.
+/// A chain of allocators. If the first allocator is exhuasted, the second one is used as a fallback.
 ///
 /// # Examples
 /// ```

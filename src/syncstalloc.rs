@@ -11,14 +11,14 @@ use crate::{AllocChain, UnsafeStalloc};
 use crate::{AllocError, ChainableAlloc};
 
 /// A wrapper around `UnsafeStalloc` that is safe to create because it prevents data races using a Mutex.
-/// In comparison to `UnsafeStalloc`, the Mutex may cause a slight overhead.
+/// In comparison to `UnsafeStalloc`, the mutex may cause a slight overhead.
 #[repr(C)]
 pub struct SyncStalloc<const L: usize, const B: usize>(Mutex<()>, UnsafeStalloc<L, B>)
 where
 	Align<B>: Alignment;
 
-/// A lock around `SyncStalloc`. Creating this type serves as proof that the user holds an exclusive
-/// lock on the inner `SyncStalloc`. When this falls out of scope, the `Stalloc` is unlocked.
+/// A lock around `SyncStalloc`. Constructing this type is proof that the user holds an exclusive
+/// lock on the inner `UnsafeStalloc`. When this falls out of scope, the `SyncStalloc` is unlocked.
 ///
 /// This is effectively a reimplementation of `std::sync::MutexGuard`.
 pub struct StallocGuard<'a, const L: usize, const B: usize>
@@ -233,23 +233,23 @@ where
 use core::alloc::Allocator;
 
 #[cfg(feature = "allocator-api")]
-unsafe impl<const L: usize, const B: usize> Allocator for SyncStalloc<L, B>
+unsafe impl<const L: usize, const B: usize> Allocator for &SyncStalloc<L, B>
 where
 	Align<B>: Alignment,
 {
 	fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
-		self.acquire_locked().allocate(layout)
+		(&*self.acquire_locked()).allocate(layout)
 	}
 
 	unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
 		// SAFETY: Upheld by the caller.
 		unsafe {
-			self.acquire_locked().deallocate(ptr, layout);
+			(&*self.acquire_locked()).deallocate(ptr, layout);
 		}
 	}
 
 	fn allocate_zeroed(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
-		self.acquire_locked().allocate_zeroed(layout)
+		(&*self.acquire_locked()).allocate_zeroed(layout)
 	}
 
 	unsafe fn grow(
@@ -259,7 +259,7 @@ where
 		new_layout: Layout,
 	) -> Result<NonNull<[u8]>, std::alloc::AllocError> {
 		// SAFETY: Upheld by the caller.
-		unsafe { self.acquire_locked().grow(ptr, old_layout, new_layout) }
+		unsafe { (&*self.acquire_locked()).grow(ptr, old_layout, new_layout) }
 	}
 
 	unsafe fn grow_zeroed(
@@ -269,10 +269,7 @@ where
 		new_layout: Layout,
 	) -> Result<NonNull<[u8]>, std::alloc::AllocError> {
 		// SAFETY: Upheld by the caller.
-		unsafe {
-			self.acquire_locked()
-				.grow_zeroed(ptr, old_layout, new_layout)
-		}
+		unsafe { (&*self.acquire_locked()).grow_zeroed(ptr, old_layout, new_layout) }
 	}
 
 	unsafe fn shrink(
@@ -282,7 +279,7 @@ where
 		new_layout: Layout,
 	) -> Result<NonNull<[u8]>, std::alloc::AllocError> {
 		// SAFETY: Upheld by the caller.
-		unsafe { self.acquire_locked().shrink(ptr, old_layout, new_layout) }
+		unsafe { (&*self.acquire_locked()).shrink(ptr, old_layout, new_layout) }
 	}
 
 	fn by_ref(&self) -> &Self

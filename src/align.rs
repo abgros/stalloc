@@ -1,5 +1,7 @@
 /// A ZST with a given alignment. `Align` and `Alignment` are used to ensure that `Block`, and hence
-/// `Stalloc`, are aligned to a particular value. The definition of `Block` is:
+/// `Stalloc`, are aligned to a particular value.
+///
+/// The definition of `Block` is:
 /// ```rs
 /// union Block<const B: usize>
 /// where

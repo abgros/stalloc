@@ -683,7 +683,7 @@ use core::{
 };
 
 #[cfg(feature = "allocator-api")]
-unsafe impl<const L: usize, const B: usize> Allocator for Stalloc<L, B>
+unsafe impl<const L: usize, const B: usize> Allocator for &Stalloc<L, B>
 where
 	Align<B>: Alignment,
 {

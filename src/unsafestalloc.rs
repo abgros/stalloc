@@ -7,7 +7,7 @@ use core::ptr::{self, NonNull};
 use crate::align::{Align, Alignment};
 use crate::{AllocChain, ChainableAlloc, Stalloc};
 
-/// A wrapper around `Stalloc` that implements `Sync` and `GlobalAlloc`.
+/// A wrapper around `Stalloc` that implements both `Sync` and `GlobalAlloc`.
 ///
 /// This type is unsafe to create, because it does not prevent data races.
 /// Therefore, it is encouraged to only use it in single-threaded environments.
@@ -63,23 +63,23 @@ unsafe impl<const L: usize, const B: usize> Sync for UnsafeStalloc<L, B> where A
 use core::alloc::{AllocError, Allocator};
 
 #[cfg(feature = "allocator-api")]
-unsafe impl<const L: usize, const B: usize> Allocator for UnsafeStalloc<L, B>
+unsafe impl<const L: usize, const B: usize> Allocator for &UnsafeStalloc<L, B>
 where
 	Align<B>: Alignment,
 {
 	fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
-		self.0.allocate(layout)
+		(&self.0).allocate(layout)
 	}
 
 	unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
 		// SAFETY: Upheld by the caller.
 		unsafe {
-			self.0.deallocate(ptr, layout);
+			(&self.0).deallocate(ptr, layout);
 		}
 	}
 
 	fn allocate_zeroed(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
-		self.0.allocate_zeroed(layout)
+		(&self.0).allocate_zeroed(layout)
 	}
 
 	unsafe fn grow(
@@ -89,7 +89,7 @@ where
 		new_layout: Layout,
 	) -> Result<NonNull<[u8]>, AllocError> {
 		// SAFETY: Upheld by the caller.
-		unsafe { self.0.grow(ptr, old_layout, new_layout) }
+		unsafe { (&self.0).grow(ptr, old_layout, new_layout) }
 	}
 
 	unsafe fn grow_zeroed(
@@ -99,7 +99,7 @@ where
 		new_layout: Layout,
 	) -> Result<NonNull<[u8]>, AllocError> {
 		// SAFETY: Upheld by the caller.
-		unsafe { self.0.grow_zeroed(ptr, old_layout, new_layout) }
+		unsafe { (&self.0).grow_zeroed(ptr, old_layout, new_layout) }
 	}
 
 	unsafe fn shrink(
@@ -109,7 +109,7 @@ where
 		new_layout: Layout,
 	) -> Result<NonNull<[u8]>, AllocError> {
 		// SAFETY: Upheld by the caller.
-		unsafe { self.0.shrink(ptr, old_layout, new_layout) }
+		unsafe { (&self.0).shrink(ptr, old_layout, new_layout) }
 	}
 
 	fn by_ref(&self) -> &Self

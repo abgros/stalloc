@@ -138,7 +138,7 @@ where
 		assert!(B >= 4, "block size must be at least 4 bytes");
 
 		let mut blocks = [Block {
-			bytes: [MaybeUninit::uninit(); B],
+			bytes: const { [MaybeUninit::uninit(); B] },
 		}; L];
 
 		// Write the first header.

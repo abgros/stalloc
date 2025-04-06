@@ -1,5 +1,6 @@
 use core::alloc::{GlobalAlloc, Layout};
 use core::fmt::{self, Debug, Formatter};
+use core::marker::PhantomData;
 use core::ops::Deref;
 use core::ptr::NonNull;
 
@@ -7,8 +8,7 @@ extern crate std;
 use std::sync::{Mutex, MutexGuard};
 
 use crate::align::{Align, Alignment};
-use crate::{AllocChain, UnsafeStalloc};
-use crate::{AllocError, ChainableAlloc};
+use crate::{AllocChain, AllocError, ChainableAlloc, UnsafeStalloc};
 
 /// A wrapper around `UnsafeStalloc` that is safe to create because it prevents data races using a Mutex.
 /// In comparison to `UnsafeStalloc`, the mutex may cause a slight overhead.
@@ -27,6 +27,7 @@ where
 {
 	_guard: MutexGuard<'a, ()>,
 	inner: &'a UnsafeStalloc<L, B>,
+	_not_sync: PhantomData<*const ()>,
 }
 
 impl<const L: usize, const B: usize> Deref for StallocGuard<'_, L, B>
@@ -182,6 +183,7 @@ where
 		StallocGuard {
 			_guard: unsafe { self.0.lock().unwrap_unchecked() },
 			inner: &self.1,
+			_not_sync: PhantomData,
 		}
 	}
 }

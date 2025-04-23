@@ -78,3 +78,8 @@ To use this library with the allocator API, add the following instead:
 [dependencies]
 stalloc = {version = <latest>, features = ["allocator-api"]}
 ```
+Or, if you prefer using the [allocator-api2](https://crates.io/crates/allocator-api2) crate on the stable compiler:
+```
+[dependencies]
+stalloc = {version = <latest>, features = ["allocator-api2"]}
+```

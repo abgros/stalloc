@@ -35,6 +35,14 @@
 //! #[global_allocator]
 //! static GLOBAL: AllocChain<SyncStalloc<1000, 8>, System> = SyncStalloc::new().chain(&System);
 //! ```
+//!
+//! # Feature flags
+//! - `std` (on by default) — used in the implementation of `SyncStalloc`
+//! - `allocator-api` (requires nightly)
+//! - `allocator-api2` (pulls in the `allocator-api2` crate)
+
+#[cfg(all(feature = "allocator-api", feature = "allocator-api2"))]
+compile_error!("The `allocator-api` and `allocator-api2` features are mutually exclusive.");
 
 use core::cell::UnsafeCell;
 use core::fmt::{self, Debug, Formatter};
@@ -42,9 +50,11 @@ use core::hint::assert_unchecked;
 use core::mem::MaybeUninit;
 use core::ptr::NonNull;
 
+#[cfg(feature = "allocator-api2")]
+use allocator_api2::alloc::AllocError;
 #[cfg(feature = "allocator-api")]
 use core::alloc::AllocError;
-#[cfg(not(feature = "allocator-api"))]
+#[cfg(not(any(feature = "allocator-api", feature = "allocator-api2")))]
 /// An error type representing some kind of allocation error due to memory exhaustion.
 /// This is a polyfill for `core::alloc::AllocError`, available through the nightly Allocator API.
 pub struct AllocError;
@@ -252,7 +262,7 @@ where
 	) -> Result<NonNull<u8>, AllocError> {
 		// Assert unsafe preconditions.
 		unsafe {
-			assert_unchecked(size >= 1 && align.is_power_of_two() && align < 2usize.pow(29) / B);
+			assert_unchecked(size >= 1 && align.is_power_of_two() && align <= 2usize.pow(29) / B);
 		}
 
 		if self.is_oom() {
@@ -677,12 +687,18 @@ where
 }
 
 #[cfg(feature = "allocator-api")]
-use core::{
-	alloc::{Allocator, Layout},
-	ptr,
+use {
+	core::alloc::{Allocator, Layout},
+	core::ptr,
 };
 
-#[cfg(feature = "allocator-api")]
+#[cfg(feature = "allocator-api2")]
+use {
+	allocator_api2::alloc::{Allocator, Layout},
+	core::ptr,
+};
+
+#[cfg(any(feature = "allocator-api", feature = "allocator-api2"))]
 unsafe impl<const L: usize, const B: usize> Allocator for &Stalloc<L, B>
 where
 	Align<B>: Alignment,

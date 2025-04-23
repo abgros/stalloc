@@ -90,13 +90,13 @@ unsafe impl<A: GlobalAlloc + ChainableAlloc, B: GlobalAlloc> GlobalAlloc for All
 	}
 }
 
-#[cfg(feature = "allocator-api")]
-use core::{
-	alloc::{AllocError, Allocator},
-	ptr::NonNull,
+#[cfg(any(feature = "allocator-api", feature = "allocator-api2"))]
+use {
+	crate::{AllocError, Allocator},
+	core::ptr::NonNull,
 };
 
-#[cfg(feature = "allocator-api")]
+#[cfg(any(feature = "allocator-api", feature = "allocator-api2"))]
 unsafe impl<A: Allocator + ChainableAlloc, B: Allocator> Allocator for AllocChain<'_, A, B> {
 	fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
 		self.0.allocate(layout).or_else(|_| self.1.allocate(layout))
@@ -164,7 +164,7 @@ unsafe impl<A: Allocator + ChainableAlloc, B: Allocator> Allocator for AllocChai
 		ptr: NonNull<u8>,
 		old_layout: Layout,
 		new_layout: Layout,
-	) -> Result<core::ptr::NonNull<[u8]>, core::alloc::AllocError> {
+	) -> Result<NonNull<[u8]>, AllocError> {
 		if self.0.addr_in_bounds(ptr.addr().into()) {
 			let res_a = unsafe { self.0.shrink(ptr, old_layout, new_layout) };
 			if res_a.is_ok() {

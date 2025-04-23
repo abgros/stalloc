@@ -231,10 +231,10 @@ where
 	}
 }
 
-#[cfg(feature = "allocator-api")]
-use core::alloc::Allocator;
+#[cfg(any(feature = "allocator-api", feature = "allocator-api2"))]
+use crate::Allocator;
 
-#[cfg(feature = "allocator-api")]
+#[cfg(any(feature = "allocator-api", feature = "allocator-api2"))]
 unsafe impl<const L: usize, const B: usize> Allocator for &SyncStalloc<L, B>
 where
 	Align<B>: Alignment,
@@ -259,7 +259,7 @@ where
 		ptr: NonNull<u8>,
 		old_layout: Layout,
 		new_layout: Layout,
-	) -> Result<NonNull<[u8]>, std::alloc::AllocError> {
+	) -> Result<NonNull<[u8]>, AllocError> {
 		// SAFETY: Upheld by the caller.
 		unsafe { (&*self.acquire_locked()).grow(ptr, old_layout, new_layout) }
 	}
@@ -269,7 +269,7 @@ where
 		ptr: NonNull<u8>,
 		old_layout: Layout,
 		new_layout: Layout,
-	) -> Result<NonNull<[u8]>, std::alloc::AllocError> {
+	) -> Result<NonNull<[u8]>, AllocError> {
 		// SAFETY: Upheld by the caller.
 		unsafe { (&*self.acquire_locked()).grow_zeroed(ptr, old_layout, new_layout) }
 	}
@@ -279,7 +279,7 @@ where
 		ptr: NonNull<u8>,
 		old_layout: Layout,
 		new_layout: Layout,
-	) -> Result<NonNull<[u8]>, std::alloc::AllocError> {
+	) -> Result<NonNull<[u8]>, AllocError> {
 		// SAFETY: Upheld by the caller.
 		unsafe { (&*self.acquire_locked()).shrink(ptr, old_layout, new_layout) }
 	}

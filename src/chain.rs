@@ -97,14 +97,20 @@ use {
 };
 
 #[cfg(any(feature = "allocator-api", feature = "allocator-api2"))]
-unsafe impl<A: Allocator + ChainableAlloc, B: Allocator> Allocator for AllocChain<'_, A, B> {
+unsafe impl<A: ChainableAlloc, B> Allocator for &AllocChain<'_, A, B>
+where
+	for<'a> &'a A: Allocator,
+	for<'a> &'a B: Allocator,
+{
 	fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
-		self.0.allocate(layout).or_else(|_| self.1.allocate(layout))
+		(&self.0)
+			.allocate(layout)
+			.or_else(|_| self.1.allocate(layout))
 	}
 
 	unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
 		if self.0.addr_in_bounds(ptr.addr().into()) {
-			unsafe { self.0.deallocate(ptr, layout) };
+			unsafe { (&self.0).deallocate(ptr, layout) };
 		} else {
 			unsafe { self.1.deallocate(ptr, layout) }
 		}
@@ -117,7 +123,7 @@ unsafe impl<A: Allocator + ChainableAlloc, B: Allocator> Allocator for AllocChai
 		new_layout: Layout,
 	) -> Result<NonNull<[u8]>, AllocError> {
 		if self.0.addr_in_bounds(ptr.addr().into()) {
-			let res_a = unsafe { self.0.grow(ptr, old_layout, new_layout) };
+			let res_a = unsafe { (&self.0).grow(ptr, old_layout, new_layout) };
 			if res_a.is_ok() {
 				return res_a;
 			}
@@ -127,7 +133,7 @@ unsafe impl<A: Allocator + ChainableAlloc, B: Allocator> Allocator for AllocChai
 				// Copy the allocation from `A` to `B`.
 				unsafe {
 					ptr.copy_to_nonoverlapping(ptr_b.cast(), old_layout.size());
-					self.0.deallocate(ptr, old_layout);
+					(&self.0).deallocate(ptr, old_layout);
 				}
 			}
 
@@ -166,7 +172,7 @@ unsafe impl<A: Allocator + ChainableAlloc, B: Allocator> Allocator for AllocChai
 		new_layout: Layout,
 	) -> Result<NonNull<[u8]>, AllocError> {
 		if self.0.addr_in_bounds(ptr.addr().into()) {
-			let res_a = unsafe { self.0.shrink(ptr, old_layout, new_layout) };
+			let res_a = unsafe { (&self.0).shrink(ptr, old_layout, new_layout) };
 			if res_a.is_ok() {
 				return res_a;
 			}
@@ -176,7 +182,7 @@ unsafe impl<A: Allocator + ChainableAlloc, B: Allocator> Allocator for AllocChai
 				// Copy the allocation from `A` to `B`.
 				unsafe {
 					ptr.copy_to_nonoverlapping(ptr_b.cast(), old_layout.size());
-					self.0.deallocate(ptr, old_layout);
+					(&self.0).deallocate(ptr, old_layout);
 				}
 			}
 

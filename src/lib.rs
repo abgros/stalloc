@@ -150,21 +150,21 @@ where
 		const {
 			assert!(L >= 1 && L <= 0xffff, "block count must be in 1..65536");
 			assert!(B >= 4, "block size must be at least 4 bytes");
+		}
 
-			let mut blocks = [Block {
-				bytes: [MaybeUninit::uninit(); B],
-			}; L];
+		let mut blocks = [Block {
+			bytes: const { [MaybeUninit::uninit(); B] },
+		}; L];
 
-			// Write the first header. SAFETY: we have already checked that `L <= 0xffff`.
-			blocks[0].header = Header {
-				next: 0,
-				length: unsafe { as_u16(L) },
-			};
+		// Write the first header. SAFETY: we have already checked that `L <= 0xffff`.
+		blocks[0].header = Header {
+			next: 0,
+			length: unsafe { as_u16(L) },
+		};
 
-			Self {
-				base: UnsafeCell::new(Header { next: 0, length: 0 }),
-				data: UnsafeCell::new(blocks),
-			}
+		Self {
+			base: UnsafeCell::new(Header { next: 0, length: 0 }),
+			data: UnsafeCell::new(blocks),
 		}
 	}
 

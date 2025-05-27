@@ -6,7 +6,7 @@ Stalloc is extremely memory-efficient. Within a 32-byte "heap", you can allocate
 
 There are three main ways to use this library:
 
-## With the allocator API
+## With the allocator API (requires the `allocator-api` feature to be enabled in your Cargo.toml)
 ```rs
 #![feature(allocator_api)]
 
@@ -78,7 +78,7 @@ To use this library with the allocator API, add the following instead:
 [dependencies]
 stalloc = {version = <latest>, features = ["allocator-api"]}
 ```
-Or, if you prefer using the [allocator-api2](https://crates.io/crates/allocator-api2) crate on the stable compiler:
+Or, if you prefer using the [allocator-api2](https://crates.io/crates/allocator-api2) crate with the stable compiler:
 ```
 [dependencies]
 stalloc = {version = <latest>, features = ["allocator-api2"]}

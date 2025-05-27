@@ -1,4 +1,6 @@
 #![allow(clippy::nursery)]
+#![allow(clippy::cast_possible_truncation)]
+
 use crate::Stalloc;
 
 extern crate alloc;
@@ -68,30 +70,6 @@ fn test_oom2() {
 	let _v: Vec<u32, _> = Vec::try_with_capacity_in(1, &alloc).unwrap();
 	let _v: Vec<u32, _> = Vec::try_with_capacity_in(1, &alloc).unwrap();
 	let _v: Vec<u32, _> = Vec::try_with_capacity_in(1, &alloc).unwrap();
-}
-
-#[test]
-#[should_panic(expected = "block count must be in 1..65536")]
-fn test_invalid_new1() {
-	let _alloc = Stalloc::<0, 4>::new();
-}
-
-#[test]
-#[should_panic(expected = "block count must be in 1..65536")]
-fn test_invalid_new2() {
-	let _alloc = Stalloc::<100_000, 4>::new();
-}
-
-#[test]
-#[should_panic(expected = "block size must be at least 4 bytes")]
-fn test_invalid_new3() {
-	let _alloc = Stalloc::<2, 2>::new();
-}
-
-#[test]
-#[should_panic(expected = "block size must be at least 4 bytes")]
-fn test_invalid_new4() {
-	let _alloc = Stalloc::<2, 1>::new();
 }
 
 #[test]

@@ -3,14 +3,12 @@
 
 use crate::Stalloc;
 
-extern crate alloc;
 extern crate std;
-use alloc::boxed::Box;
-use alloc::vec::Vec;
-use core::mem;
-use core::mem::MaybeUninit;
+use core::mem::{self, MaybeUninit};
+use std::boxed::Box;
 #[allow(unused_imports)]
 use std::dbg;
+use std::vec::Vec;
 
 #[test]
 fn test_vec() {
@@ -416,7 +414,16 @@ fn test_vec_capacity() {
 }
 
 #[test]
-fn test34() {
-	let _a = Stalloc::<34, 4>::new();
-	let _b = crate::SyncStalloc::<34, 4>::new();
+fn test_claims() {
+	use crate::ChainableAlloc;
+	use std::alloc::{Allocator, Layout};
+
+	let alloc = Stalloc::<100, 4>::new();
+	let layout = Layout::from_size_align(0, 1 << 29).unwrap();
+
+	let ptr = (&alloc).allocate(layout).unwrap();
+	assert!(alloc.claims(ptr.as_ptr().cast(), layout));
+
+	let mut b = Box::new_in(2, &alloc);
+	assert!(alloc.claims(&raw mut *b, layout));
 }

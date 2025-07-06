@@ -202,8 +202,8 @@ unsafe impl<const L: usize, const B: usize> ChainableAlloc for UnsafeStalloc<L, 
 where
 	Align<B>: Alignment,
 {
-	fn addr_in_bounds(&self, addr: usize) -> bool {
-		self.0.addr_in_bounds(addr)
+	fn claims(&self, ptr: *mut u8, layout: Layout) -> bool {
+		self.0.claims(ptr, layout)
 	}
 }
 

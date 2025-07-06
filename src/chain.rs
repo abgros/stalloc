@@ -3,14 +3,14 @@ use core::alloc::{GlobalAlloc, Layout};
 /// A trait representing an allocator that another allocator can be chained to.
 ///
 /// # Safety
-/// `addr_in_bounds` must return true if and only if the address could belong to
-/// a pointer which is valid for the allocator. This trait is used to decide
-/// which allocator to call when the user calls `deallocate()` and related functions.
+/// `claims` must return true if and only if the allocation belongs to this
+/// allocator (as opposed to one further up the chain). This trait is used to decide
+/// which allocator to free from when the user calls `deallocate()` and related functions.
 pub unsafe trait ChainableAlloc {
-	/// Checks whether a certain address is contained within the allocator. This
+	/// Tests whether a certain allocation belongs to this allocator. This
 	/// is called when using `deallocate()` and related functions in order to
 	/// determine which allocator needs to free the pointer.
-	fn addr_in_bounds(&self, addr: usize) -> bool;
+	fn claims(&self, ptr: *mut u8, layout: Layout) -> bool;
 }
 
 /// A chain of allocators. If the first allocator is exhuasted, the second one is used as a fallback.
@@ -56,7 +56,7 @@ unsafe impl<A: GlobalAlloc + ChainableAlloc, B: GlobalAlloc> GlobalAlloc for All
 	}
 
 	unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-		if self.0.addr_in_bounds(ptr.addr()) {
+		if self.0.claims(ptr, layout) {
 			unsafe { self.0.dealloc(ptr, layout) };
 		} else {
 			unsafe { self.1.dealloc(ptr, layout) };
@@ -64,7 +64,7 @@ unsafe impl<A: GlobalAlloc + ChainableAlloc, B: GlobalAlloc> GlobalAlloc for All
 	}
 
 	unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-		if self.0.addr_in_bounds(ptr.addr()) {
+		if self.0.claims(ptr, layout) {
 			let ptr_a = unsafe { self.0.realloc(ptr, layout, new_size) };
 			if !ptr_a.is_null() {
 				return ptr_a;
@@ -109,7 +109,7 @@ where
 	}
 
 	unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
-		if self.0.addr_in_bounds(ptr.addr().into()) {
+		if self.0.claims(ptr.as_ptr(), layout) {
 			unsafe { (&self.0).deallocate(ptr, layout) };
 		} else {
 			unsafe { self.1.deallocate(ptr, layout) }
@@ -122,7 +122,7 @@ where
 		old_layout: Layout,
 		new_layout: Layout,
 	) -> Result<NonNull<[u8]>, AllocError> {
-		if self.0.addr_in_bounds(ptr.addr().into()) {
+		if self.0.claims(ptr.as_ptr(), old_layout) {
 			let res_a = unsafe { (&self.0).grow(ptr, old_layout, new_layout) };
 			if res_a.is_ok() {
 				return res_a;
@@ -171,7 +171,7 @@ where
 		old_layout: Layout,
 		new_layout: Layout,
 	) -> Result<NonNull<[u8]>, AllocError> {
-		if self.0.addr_in_bounds(ptr.addr().into()) {
+		if self.0.claims(ptr.as_ptr(), old_layout) {
 			let res_a = unsafe { (&self.0).shrink(ptr, old_layout, new_layout) };
 			if res_a.is_ok() {
 				return res_a;

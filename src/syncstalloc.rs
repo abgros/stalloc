@@ -177,7 +177,7 @@ where
 	///
 	/// assert!(alloc.is_oom());
 	/// ```
-	pub fn acquire_locked(&self) -> StallocGuard<L, B> {
+	pub fn acquire_locked(&self) -> StallocGuard<'_, L, B> {
 		// SAFETY: if this Mutex is poisoned, it means that one of the allocator functions panicked,
 		// which is already declared to be UB. Therefore, we can assume that this is never poisoned.
 		StallocGuard {
@@ -296,8 +296,8 @@ unsafe impl<const L: usize, const B: usize> ChainableAlloc for SyncStalloc<L, B>
 where
 	Align<B>: Alignment,
 {
-	fn addr_in_bounds(&self, addr: usize) -> bool {
-		self.1.addr_in_bounds(addr)
+	fn claims(&self, ptr: *mut u8, layout: Layout) -> bool {
+		self.1.claims(ptr, layout)
 	}
 }
 

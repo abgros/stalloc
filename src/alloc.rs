@@ -17,14 +17,11 @@ impl core::fmt::Display for AllocError {
 	}
 }
 
-#[cfg(feature = "allocator-api2")]
-pub use allocator_api2::alloc::AllocError;
+#[cfg(not(any(feature = "allocator-api", feature = "allocator-api2")))]
+pub use core::alloc::Layout;
 
 #[cfg(feature = "allocator-api")]
-pub use core::alloc::AllocError;
-
-#[cfg(feature = "allocator-api")]
-pub use core::alloc::{Allocator, Layout};
+pub use core::alloc::{AllocError, Allocator, Layout};
 
 #[cfg(feature = "allocator-api2")]
-pub use allocator_api2::alloc::{Allocator, Layout};
+pub use allocator_api2::alloc::{AllocError, Allocator, Layout};

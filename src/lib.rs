@@ -696,6 +696,7 @@ unsafe impl<const L: usize, const B: usize> Allocator for &Stalloc<L, B>
 where
 	Align<B>: Alignment,
 {
+	#[inline]
 	fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
 		// We can only allocate memory in units of `B`, so round up.
 		let size = layout.size().div_ceil(B);
@@ -703,7 +704,8 @@ where
 
 		// If `size` is zero, give away a dangling pointer.
 		if size == 0 {
-			let dangling = NonNull::new(layout.align() as _).unwrap();
+			let addr = layout.align().try_into().unwrap();
+			let dangling = NonNull::without_provenance(addr);
 			return Ok(NonNull::slice_from_raw_parts(dangling, 0));
 		}
 
@@ -822,15 +824,14 @@ where
 					self.deallocate_blocks(ptr, old_size);
 				}
 
-				// SAFETY: Alignment is always nonzero.
-				let dangling = NonNull::new_unchecked(new_layout.align() as _);
-
+				let addr = new_layout.align().try_into().unwrap();
+				let dangling = NonNull::without_provenance(addr);
 				return Ok(NonNull::slice_from_raw_parts(dangling, 0));
 			}
 		}
 
 		// We have to reallocate only if the alignment isn't good enough anymore.
-		if ptr.as_ptr().addr() % new_layout.align() != 0 {
+		if !ptr.as_ptr().addr().is_multiple_of(new_layout.align()) {
 			// Since the address of `ptr` must be a multiple of `B` (upheld by the caller),
 			// entering this branch means that `new_layout.align() > B`.
 			let align = new_layout.align() / B;
@@ -865,15 +866,21 @@ where
 	}
 }
 
+/// SAFETY: Since zero-sized allocations unconditionally succeed, it can be assumed
+/// that a zero-sized allocation was allocated by this Stalloc. Otherwise, check whether
+/// the pointer is contained within this Stalloc's buffer.
 unsafe impl<const L: usize, const B: usize> ChainableAlloc for Stalloc<L, B>
 where
 	Align<B>: Alignment,
 {
-	fn addr_in_bounds(&self, addr: usize) -> bool {
-		addr >= self.data.get().addr() && addr < self.data.get().addr() + B * L
+	#[inline]
+	fn claims(&self, ptr: *mut u8, layout: Layout) -> bool {
+		let base_addr = self.data.get().addr();
+		layout.size() == 0 || (ptr.addr() >= base_addr && ptr.addr() < base_addr + B * L)
 	}
 }
 
+// Note: `chain` should be part of `ChainableAlloc` if const trait methods get stabilized
 impl<const L: usize, const B: usize> Stalloc<L, B>
 where
 	Align<B>: Alignment,
